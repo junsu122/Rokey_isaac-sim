@@ -11,11 +11,16 @@ from pathlib import Path
 _BASE  = Path(__file__).parent           # main_isaac/
 _SPOT  = _BASE / "robots" / "spot"      # main_isaac/robots/spot/
 _M0609 = _BASE / "robots" / "m0609"     # main_isaac/robots/m0609/
+_DRONE = _BASE / "robots" / "drone"     # main_isaac/robots/drone/
 
 # ── 경로 설정 ─────────────────────────────────────────────────────────
-WAREHOUSE_USD     = str(_BASE / "usd" / "warehouse_v3.usd")
+WAREHOUSE_USD     = "/home/rokey/gidong_ws/Rokey_isaac-sim-main/main_isaac/usd/warehouse_v7_props.usd"
 SPOT_SRC_DIR      = str(_SPOT  / "spot_test")
 M0609_SRC_DIR     = str(_M0609 / "m0609_aruco_detect")
+
+# Drone 관련 경로
+DRONE_DEPS_DIR    = str(_DRONE / "drone_deps")
+PEGASUS_SIM_DIR   = str(_DRONE / "pegasus_simulator")
 
 # Spot용 그리퍼 USD (사전 컴파일된 USD 파일)
 SPOT_GRIPPER_USD  = str(_SPOT / "onrobot_rg2" / "urdf" / "onrobot_rg2" / "onrobot_rg2.usd")
@@ -33,12 +38,14 @@ RENDERING_DT = 1 / 50    # 50  Hz
 
 # ── 로봇 스폰 설정 ──────────────────────────────────────────────────
 #
-#  type      : "spot"  또는  "m0609"
-#  name      : 고유 이름 (USD prim path 에 사용됨)
-#  spawn_xyz : (x, y, z)  단위 m  ← 이 값을 수정해 위치 조정
-#  spawn_yaw : 초기 방향각 deg   (Z축 기준 반시계 +)
-#  cube_xyz  : 집을 큐브 초기 위치  (두 타입 공통)
-#  goal_xyz  : 놓을 목표 위치       (m0609 전용, spot 은 미사용)
+#  type        : "spot" | "m0609" | "drone"
+#  name        : 고유 이름 (USD prim path 에 사용됨)
+#  spawn_xyz   : (x, y, z)  단위 m  ← 이 값을 수정해 위치 조정
+#  spawn_yaw   : 초기 방향각 deg   (Z축 기준 반시계 +)
+#  cube_xyz    : 집을 큐브 초기 위치  (spot, m0609 전용)
+#  goal_xyz    : 놓을 목표 위치       (m0609 전용)
+#  environment : 로드할 환경 이름     (drone 전용, 기본값: "Black Gridroom")
+#  takeoff_alt : 이륙 목표 고도 m     (drone 전용, 기본값: 1.5)
 #
 #  ──────────────────────────────────────────────────────────────────
 #  창고 레이아웃 참고: /home/rokey/isaac_warehouse_v1/layout.png
@@ -58,6 +65,17 @@ RENDERING_DT = 1 / 50    # 50  Hz
 
 
 ROBOT_REGISTRY = [
+
+    # ── Drone #1 ────────────────────────────────────────────────────
+    # 위치: 창고 내 원하는 위치
+    # 역할: 키보드/조이스틱 자유 비행 + 깊이 카메라 HUD
+    {
+        "type"        : "drone",
+        "name"        : "Drone_01",
+        "spawn_xyz"   : (0.0, 0.0, 2.2),
+        "spawn_yaw"   : 0.0,
+        "takeoff_alt" : 1.5,               # 선택 (기본값)
+    },
 
     # ── Spot #1 ─────────────────────────────────────────────────────
     # 위치: 창고 중앙 통로 남측

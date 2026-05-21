@@ -41,8 +41,9 @@ from robot_config import PHYSICS_DT, RENDERING_DT, ROBOT_REGISTRY
 from world_setup import setup_warehouse
 
 #########################################################로봇 추가 부분
-from robots.spot.spot_agent import SpotAgent
+from robots.spot.spot_agent  import SpotAgent
 from robots.m0609.m0609_agent import M0609Agent
+from robots.drone.drone_agent import DroneAgent
 #####################################################################
 
 # ── 새 로봇 타입을 추가하면 여기에 등록 ────────────────────────────────
@@ -51,6 +52,7 @@ _AGENT_CLASSES = {
     ##############################바로 위에서 추가한 부분을 불러오고 이름을 지정합니다
     "spot" : SpotAgent,
     "m0609": M0609Agent,
+    "drone": DroneAgent,
     ########################################################################
 }
 
