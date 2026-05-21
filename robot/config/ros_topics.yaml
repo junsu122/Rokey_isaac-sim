@@ -1,0 +1,37 @@
+# ROS2 토픽 이름 설정
+# Isaac Sim의 ROS2 Bridge에서 발행하는 토픽명과 일치해야 합니다.
+
+amr:
+  robot_id: "amr_001"
+  subscribe:                              # Isaac Sim → Firebase
+    odom:    "/amr_001/odom"             # nav_msgs/Odometry
+    battery: "/amr_001/battery_state"    # sensor_msgs/BatteryState
+    cmd_vel: "/amr_001/cmd_vel"          # geometry_msgs/Twist
+  publish:                               # Firebase → Isaac Sim
+    nav_goal: "/amr_001/goal"            # geometry_msgs/PoseStamped
+    status:   "/amr_001/firebase_status" # std_msgs/String (JSON)
+
+drone:
+  robot_id: "drone_001"
+  subscribe:
+    odom:    "/drone_001/odom"           # nav_msgs/Odometry
+    battery: "/drone_001/battery_state"  # sensor_msgs/BatteryState
+  publish:
+    pose_cmd: "/drone_001/pose_command"  # geometry_msgs/PoseStamped
+    status:   "/drone_001/firebase_status"
+
+arm:
+  robot_id: "m0609"
+  subscribe:
+    joint_states: "/m0609/joint_states"      # sensor_msgs/JointState
+    ee_pose:      "/m0609/end_effector_pose" # geometry_msgs/PoseStamped
+  publish:
+    task_cmd: "/m0609/task_command"           # std_msgs/String (JSON)
+    status:   "/m0609/firebase_status"
+
+aruco:
+  publish:
+    detections: "/aruco/detections"           # std_msgs/String (JSON)
+
+# Firebase → ROS2 발행 쓰로틀링 (초)
+update_interval: 0.5

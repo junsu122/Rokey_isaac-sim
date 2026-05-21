@@ -1,0 +1,123 @@
+# ArUco marker role definitions
+#
+# ID  0 ~  9 : item        Product markers  (attach to boxes)
+# ID 10 ~ 19 : section     Section markers  (attach to shelves/floor)
+# ID 20 ~ 29 : destination Destination markers (attach at drop zones)
+
+markers:
+
+  # ── Item markers (attach to each product box) ─────────────────
+  # label     : product name shown on screen / stored in Firebase
+  # target_section : where AMR should deliver this product
+  # destination    : final delivery zone (used for task routing)
+  0:
+    role:           "item"
+    label:          "Apple Watch"
+    target_section: "A-1"
+    destination:    "Gangnam"
+    marker_size:    0.04
+
+  1:
+    role:           "item"
+    label:          "Galaxy Tab"
+    target_section: "A-2"
+    destination:    "Seocho"
+    marker_size:    0.04
+
+  2:
+    role:           "item"
+    label:          "MacBook Pro"
+    target_section: "A-3"
+    destination:    "Guro Digital"
+    marker_size:    0.04
+
+  3:
+    role:           "item"
+    label:          "AirPods"
+    target_section: "A-1"
+    destination:    "Gangnam"
+    marker_size:    0.04
+
+  4:
+    role:           "item"
+    label:          "Kindle"
+    target_section: "A-2"
+    destination:    "Seocho"
+    marker_size:    0.04
+
+  # ── Section markers (AMR navigates by reading these) ──────────
+  # AMR reads this marker to confirm it arrived at the right section
+  10:
+    role:        "section"
+    label:       "Section A-1"
+    section_id:  "A-1"
+    position:    {x: -0.4, y: 0.3, z: 0.0}
+    marker_size: 0.08
+
+  11:
+    role:        "section"
+    label:       "Section A-2"
+    section_id:  "A-2"
+    position:    {x: 0.0,  y: 0.3, z: 0.0}
+    marker_size: 0.08
+
+  12:
+    role:        "section"
+    label:       "Section A-3"
+    section_id:  "A-3"
+    position:    {x: 0.4,  y: 0.3, z: 0.0}
+    marker_size: 0.08
+
+  13:
+    role:        "section"
+    label:       "Section B-1"
+    section_id:  "B-1"
+    position:    {x: -0.4, y: -0.3, z: 0.0}
+    marker_size: 0.08
+
+  14:
+    role:        "section"
+    label:       "Section B-2"
+    section_id:  "B-2"
+    position:    {x: 0.0,  y: -0.3, z: 0.0}
+    marker_size: 0.08
+
+  # ── Destination markers (final drop zone confirmation) ────────
+  # destination 값이 item 마커의 destination 값과 일치해야 합니다.
+  20:
+    role:        "destination"
+    label:       "Dest-Gangnam"
+    section_id:  "DEST-Gangnam"
+    destination: "Gangnam"
+    position:    {x: 1.5, y:  0.5, z: 0.0}
+    marker_size: 0.10
+
+  21:
+    role:        "destination"
+    label:       "Dest-Seocho"
+    section_id:  "DEST-Seocho"
+    destination: "Seocho"
+    position:    {x: 1.5, y:  0.0, z: 0.0}
+    marker_size: 0.10
+
+  22:
+    role:        "destination"
+    label:       "Dest-Guro"
+    section_id:  "DEST-Guro"
+    destination: "Guro Digital"
+    position:    {x: 1.5, y: -0.5, z: 0.0}
+    marker_size: 0.10
+
+# Camera intrinsics
+camera:
+  width: 1280
+  height: 720
+  fx: 958.8
+  fy: 958.8
+  cx: 640.0
+  cy: 360.0
+
+# ArUco detection settings
+aruco:
+  dictionary: "DICT_4X4_50"
+  corner_refinement_method: "CORNER_REFINE_SUBPIX"

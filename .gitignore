@@ -1,0 +1,33 @@
+# ── Firebase 서비스 계정 키 (절대 커밋 금지) ──────────────────
+robot/config/serviceAccountKey.json
+**/serviceAccountKey.json
+
+# ── 환경 변수 ─────────────────────────────────────────────────
+.env.local
+.env.*.local
+*.env
+
+# ── Node.js / UI ──────────────────────────────────────────────
+UI/node_modules/
+UI/dist/
+UI/.DS_Store
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# ── OS ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+
+# ── Claude Code ───────────────────────────────────────────────
+.claude/

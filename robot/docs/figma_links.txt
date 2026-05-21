@@ -1,0 +1,15 @@
+Rokey Factory — FigJam 다이어그램 링크
+생성일: 2026-05-19
+========================================
+
+1. 시스템 아키텍처
+   https://www.figma.com/board/wNs2WSppsZLuXFzuAtFUWQ
+
+2. 배송 시나리오 (시퀀스 다이어그램)
+   https://www.figma.com/board/zVrWMMa9sahcbG6Rzxt8oQ
+
+3. Firestore DB 구조 (ER 다이어그램)
+   https://www.figma.com/board/ERyzsD0x7Ve9QwP2fIWGzl
+
+4. 로봇 상태머신
+   https://www.figma.com/board/2VRmDLEv5q56NZrju03U8m

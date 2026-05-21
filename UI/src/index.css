@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Amazon Ember", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background-color: #EAEDED;
+  color: #111111;
+}
+
+#root { min-height: 100vh; }
+
+:root {
+  --amz-dark:    #232F3E;
+  --amz-mid:     #37475A;
+  --amz-light:   #485769;
+  --amz-orange:  #FF9900;
+  --amz-orange2: #F08804;
+  --amz-bg:      #EAEDED;
+  --amz-card:    #FFFFFF;
+  --amz-border:  #D5D9D9;
+  --amz-text:    #111111;
+  --amz-muted:   #565959;
+  --amz-link:    #007185;
+}
