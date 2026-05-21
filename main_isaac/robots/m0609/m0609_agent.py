@@ -331,6 +331,7 @@ class M0609Agent(BaseRobotAgent):
         self._prev_ev           = -1
         self._cur_ev            = -1
         self._det               = None
+        self._attached_cube_path = None
         # EE workspace — spawn 기준 상대 범위
         ox, oy = spawn[0], spawn[1]
         self._ws_x = (ox + 0.2, ox + 0.6)
@@ -437,8 +438,21 @@ class M0609Agent(BaseRobotAgent):
     def _sync_marker(self):
         if self._cube is None:
             return
-        cube_pos, cube_q = self._cube.get_world_pose()
-        R_c = _quat_wxyz_to_R(cube_q)
+        if self._attached_cube_path:
+            # 큐브가 그리퍼에 종속된 상태 — stage에서 직접 월드 변환 취득
+            stage = omni.usd.get_context().get_stage()
+            prim  = stage.GetPrimAtPath(self._attached_cube_path)
+            if not prim.IsValid():
+                return
+            world_xf = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+            cube_pos = np.array(world_xf.ExtractTranslation())
+            rq       = world_xf.ExtractRotationQuat()
+            im       = rq.GetImaginary()
+            cube_q   = np.array([rq.GetReal(),
+                                  float(im[0]), float(im[1]), float(im[2])])
+        else:
+            cube_pos, cube_q = self._cube.get_world_pose()
+        R_c  = _quat_wxyz_to_R(cube_q)
         mpos = cube_pos + R_c @ np.array([0.0, 0.0, _ARUCO_Z_OFF])
         stage = omni.usd.get_context().get_stage()
         _set_marker_pose(stage, self._marker_path, mpos, cube_q)
@@ -462,16 +476,80 @@ class M0609Agent(BaseRobotAgent):
         self._robot.apply_action(actions)
 
     def _attach_cube(self):
-        stage = omni.usd.get_context().get_stage()
-        _attach_fixed_joint(stage, self._grip_joint,
-                            self._grip_body_path,
-                            f"/World/{self.name}_cube")
+        stage     = omni.usd.get_context().get_stage()
+        cube_path = f"/World/{self.name}_cube"
+        cube_prim = stage.GetPrimAtPath(cube_path)
+        pad_prim  = stage.GetPrimAtPath(self._grip_body_path)
+        if not cube_prim.IsValid() or not pad_prim.IsValid():
+            carb.log_warn(f"[{self.name}] attach: prim 없음")
+            return
+
+        cache      = UsdGeom.XformCache()
+        cube_world = cache.GetLocalToWorldTransform(cube_prim)
+        pad_world  = cache.GetLocalToWorldTransform(pad_prim)
+        rel        = cube_world * pad_world.GetInverse()
+
+        # 물리 비활성화 (그리퍼 움직임에 덮어쓰이지 않게)
+        if cube_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            UsdPhysics.RigidBodyAPI(cube_prim).GetRigidBodyEnabledAttr().Set(False)
+
+        # 큐브를 흡착 패드 하위로 재부모화
+        new_path = self._grip_body_path + f"/{self.name}_cube"
+        omni.kit.commands.execute("MovePrim",
+                                  path_from=cube_path,
+                                  path_to=new_path)
+        self._attached_cube_path = new_path
+
+        # 패드 기준 상대 로컬 변환 설정
+        moved = stage.GetPrimAtPath(new_path)
+        xf    = UsdGeom.Xformable(moved)
+        xf.ClearXformOpOrder()
+        tr = rel.ExtractTranslation()
+        rq = rel.ExtractRotationQuat()
+        im = rq.GetImaginary()
+        xf.AddTranslateOp().Set(
+            Gf.Vec3d(float(tr[0]), float(tr[1]), float(tr[2])))
+        xf.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(
+            Gf.Quatd(rq.GetReal(),
+                     float(im[0]), float(im[1]), float(im[2])))
+        print(f"[{self.name}] 큐브 흡착 완료: {new_path}")
 
     def _detach_cube(self):
-        stage = omni.usd.get_context().get_stage()
-        if stage.GetPrimAtPath(self._grip_joint).IsValid():
-            stage.RemovePrim(self._grip_joint)
-            print(f"[{self.name}] 조인트 해제")
+        stage    = omni.usd.get_context().get_stage()
+        cur_path = (self._attached_cube_path
+                    or self._grip_body_path + f"/{self.name}_cube")
+        cube_prim = stage.GetPrimAtPath(cur_path)
+        if not cube_prim.IsValid():
+            carb.log_warn(f"[{self.name}] detach: prim 없음 {cur_path}")
+            return
+
+        # 현재 월드 변환 저장 (부모가 패드이므로 월드 기준으로 계산)
+        world_xf = UsdGeom.XformCache().GetLocalToWorldTransform(cube_prim)
+        tr       = world_xf.ExtractTranslation()
+        rq       = world_xf.ExtractRotationQuat()
+        im       = rq.GetImaginary()
+
+        # /World 로 재부모화
+        orig_path = f"/World/{self.name}_cube"
+        omni.kit.commands.execute("MovePrim",
+                                  path_from=cur_path,
+                                  path_to=orig_path)
+        self._attached_cube_path = None
+
+        # 월드 변환 복원
+        moved = stage.GetPrimAtPath(orig_path)
+        xf    = UsdGeom.Xformable(moved)
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(
+            Gf.Vec3d(float(tr[0]), float(tr[1]), float(tr[2])))
+        xf.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(
+            Gf.Quatd(rq.GetReal(),
+                     float(im[0]), float(im[1]), float(im[2])))
+
+        # 물리 재활성화
+        if moved.HasAPI(UsdPhysics.RigidBodyAPI):
+            UsdPhysics.RigidBodyAPI(moved).GetRigidBodyEnabledAttr().Set(True)
+        print(f"[{self.name}] 큐브 해제 완료: {orig_path}")
 
     def _display_label(self) -> str:
         if self._state == "DONE":
