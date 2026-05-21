@@ -3,6 +3,9 @@ import omni.usd
 
 REALSENSE_D455_USD_REL = "/Isaac/Sensors/Intel/RealSense/rsd455.usd"
 
+# color 카메라로 인정할 이름 키워드 (나머지는 비활성화)
+_COLOR_CAM_KEYWORDS = ("OV9782", "Color")
+
 
 def _get_assets_root():
     try:
@@ -47,17 +50,17 @@ def attach_realsense_d455(parent_prim_path: str,
     xform.AddTranslateOp().Set(Gf.Vec3d(*translation))
     xform.AddRotateXYZOp().Set(Gf.Vec3f(*rpy_deg))
 
-    # RealSense USD 내 RigidBodyAPI/CollisionAPI 비활성화:
-    # angle_bracket(이미 rigid body)의 자식으로 두면 PhysX 계층 충돌이 발생하므로
-    # 물리 시뮬레이션이 진행된 후 prim 이 생성되는 시점에 처리한다.
-    # (world.reset() 이전에는 reference 내부 prim 이 아직 로드 안 됨)
-    # → post_reset 에서 _disable_physics_on_realsense() 를 호출하거나,
-    #   아래와 같이 Xform 자체에 physics:rigidBodyEnabled = false 오버라이드 적용.
-    # 현재 단계에서 할 수 있는 것: Xform prim 에 RigidBodyAPI 가 있으면 비활성화
     for prim in Usd.PrimRange(stage.GetPrimAtPath(rs_prim_path)):
+        # 물리 비활성화 (기존)
         if prim.HasAPI(UsdPhysics.RigidBodyAPI):
             UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Set(False)
-            print(f"[realsense_mount] disabled RigidBodyAPI on {prim.GetPath()}")
+
+        # color 카메라 외 depth/IR 카메라 비활성화 → 렌더링 부하 제거
+        if prim.IsA(UsdGeom.Camera):
+            name = prim.GetName()
+            if not any(kw in name for kw in _COLOR_CAM_KEYWORDS):
+                prim.SetActive(False)
+                print(f"[realsense_mount] deactivated non-color camera: {prim.GetPath()}")
 
     print(f"[realsense_mount] D455 attached at {rs_prim_path}")
     print(f"                  source USD = {usd_path}")
