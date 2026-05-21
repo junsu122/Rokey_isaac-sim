@@ -1,18 +1,24 @@
 """
-main_isaac/config.py
+main_isaac/robot_config.py
 ====================
 ★ 로봇 스폰 좌표는 ROBOT_REGISTRY 에서 한곳에서 수정합니다.
 
 좌표계: warehouse_v3.usd 월드 원점(0,0,0) 기준, 단위 m
 """
+from pathlib import Path
+
+# ── 기준 경로 (이 파일 위치 기준으로 자동 계산) ──────────────────────
+_BASE  = Path(__file__).parent           # main_isaac/
+_SPOT  = _BASE / "robots" / "spot"      # main_isaac/robots/spot/
+_M0609 = _BASE / "robots" / "m0609"     # main_isaac/robots/m0609/
 
 # ── 경로 설정 ─────────────────────────────────────────────────────────
-WAREHOUSE_USD     = "/home/rokey/isaac_warehouse_v1/warehouse_v3.usd"
-SPOT_SRC_DIR      = "/home/rokey/dev_ws/isaac_sim/src/spot_test"
-M0609_SRC_DIR     = "/home/rokey/dev_ws/isaac_sim/src/m0609_aruco_detect"
+WAREHOUSE_USD     = str(_BASE / "usd" / "warehouse_v3.usd")
+SPOT_SRC_DIR      = str(_SPOT  / "spot_test")
+M0609_SRC_DIR     = str(_M0609 / "m0609_aruco_detect")
 
 # Spot용 그리퍼 USD (사전 컴파일된 USD 파일)
-SPOT_GRIPPER_USD  = "/home/rokey/dev_ws/isaac_sim/src/onrobot_rg2/urdf/onrobot_rg2/onrobot_rg2.usd"
+SPOT_GRIPPER_USD  = str(_SPOT / "onrobot_rg2" / "urdf" / "onrobot_rg2" / "onrobot_rg2.usd")
 
 # M0609 관련 경로 (M0609_SRC_DIR 기준)
 M0609_URDF        = M0609_SRC_DIR + "/doosan-robot2/urdf/m0609_isaac_sim.urdf"
@@ -38,6 +44,19 @@ RENDERING_DT = 1 / 50    # 50  Hz
 #  창고 레이아웃 참고: /home/rokey/isaac_warehouse_v1/layout.png
 #  ──────────────────────────────────────────────────────────────────
 
+
+
+
+####################################################
+# main.py에서 지정한 이름이 "type"이 됩니다.
+# "name"은 아이작심에서의 stage의 이름이 됩니다.
+# "spawn_xyz" 는 스폰할때 world 좌표 기준 스폰 위치가 됩니다.
+# "spawn_yaw" 는 스폰할때 world 좌표 기준 yaw 방향(z축 회전 방향)이 됩니다.
+#####################################################
+
+
+
+
 ROBOT_REGISTRY = [
 
     # ── Spot #1 ─────────────────────────────────────────────────────
@@ -46,7 +65,7 @@ ROBOT_REGISTRY = [
     {
         "type"      : "spot",
         "name"      : "Spot_01",
-        "spawn_xyz" : ( 4.45,  0.0, 0.65),   # ★ 스폰 (x, y, z)
+        "spawn_xyz" : ( 4.45,  0.0, 0.7),   # ★ 스폰 (x, y, z)
         "spawn_yaw" : 0.0,                   # ★ 초기 방향 (deg)
         "cube_xyz"  : ( 5.0,  0.0, 0.025),  # ★ 블루 큐브 초기 위치
     },
@@ -57,7 +76,7 @@ ROBOT_REGISTRY = [
     {
         "type"      : "spot",
         "name"      : "Spot_02",
-        "spawn_xyz" : ( 4.25,  5.7, 0.65),   # ★ 스폰
+        "spawn_xyz" : ( 4.25,  5.7, 0.7),   # ★ 스폰
         "spawn_yaw" : 0.0,
         "cube_xyz"  : ( 5.0,  4.0, 0.025),  # ★ 블루 큐브 초기 위치
     },

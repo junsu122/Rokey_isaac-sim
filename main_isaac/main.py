@@ -4,11 +4,12 @@ main_isaac/main.py
 여러 로봇을 단일 창고 환경에서 동시 구동하는 진입점.
 
 실행:
-    cd /home/rokey/dev_ws/main_isaac
-    python main.py
+    python /path/to/main_isaac/main.py
+    또는
+    cd /path/to/main_isaac && python main.py
 
 로봇 추가 방법:
-    1. config.py 의 ROBOT_REGISTRY 에 항목 추가
+    1. robot_config.py 의 ROBOT_REGISTRY 에 항목 추가
     2. 새 로봇 타입이면 robots/ 에 에이전트 클래스 작성 후 _AGENT_CLASSES 에 등록
 """
 from isaacsim import SimulationApp
@@ -23,6 +24,14 @@ simulation_app = SimulationApp({
     ],
 })
 
+import sys
+import os
+
+# main_isaac/ 디렉토리를 sys.path 에 추가 → 어느 경로에서 실행해도 로컬 모듈 인식
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
 import time
 import carb
 import omni.kit.app
@@ -30,13 +39,19 @@ from isaacsim.core.api import World
 
 from robot_config import PHYSICS_DT, RENDERING_DT, ROBOT_REGISTRY
 from world_setup import setup_warehouse
-from robots.spot_agent import SpotAgent
-from robots.m0609_agent import M0609Agent
+
+#########################################################로봇 추가 부분
+from robots.spot.spot_agent import SpotAgent
+from robots.m0609.m0609_agent import M0609Agent
+#####################################################################
 
 # ── 새 로봇 타입을 추가하면 여기에 등록 ────────────────────────────────
 _AGENT_CLASSES = {
+
+    ##############################바로 위에서 추가한 부분을 불러오고 이름을 지정합니다
     "spot" : SpotAgent,
     "m0609": M0609Agent,
+    ########################################################################
 }
 
 # ── 월드 생성 ─────────────────────────────────────────────────────────
