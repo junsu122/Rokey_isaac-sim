@@ -35,8 +35,9 @@ from ..base_robot import BaseRobotAgent
 # 외부 모듈 경로 추가
 if C.SPOT_SRC_DIR not in sys.path:
     sys.path.insert(0, C.SPOT_SRC_DIR)
-from realsense_mount import attach_realsense_d455
-from wrist_camera import WristCamera
+if C.USE_REALSENSE:
+    from realsense_mount import attach_realsense_d455
+    from wrist_camera import WristCamera
 
 # ── 고정 파라미터 ─────────────────────────────────────────────────────
 _GRIPPER_ROT_OFFSET  = R.from_euler("xyz", [110.0, 0.0, 90.0], degrees=True)
@@ -61,11 +62,36 @@ _FOLLOWER_LINKS = {
 _OPEN_ANGLE     = 0.7
 _ANIM_STEPS     = 250
 
+# 가끔 못 일어남
+# _CROUCH_DEG = {
+#     "fl_hx":  23.1,  "fl_hy":  68.3,  "fl_kn": -99.8,
+#     "fr_hx": -23.1,  "fr_hy":  68.3,  "fr_kn": -99.8,
+#     "hl_hx":  27.0,  "hl_hy":  63.11, "hl_kn": -86.11,
+#     "hr_hx": -27.0,  "hr_hy":  63.11, "hr_kn": -86.11,
+# }
+
+# 앞으로 고꾸라짐
+# _CROUCH_DEG = {
+#     "fl_hx":  22.2,  "fl_hy":  51.57,  "fl_kn": -86.11,
+#     "fr_hx": -22.2,  "fr_hy":  51.57,  "fr_kn": -86.11,
+#     "hl_hx":  16.5,  "hl_hy":  16.2, "hl_kn": -50.4,
+#     "hr_hx": -16.5,  "hr_hy":  16.2, "hr_kn": -50.4,
+# }
+
+# 한쪽으로 기운다
+# _CROUCH_DEG = {
+#     "fl_hx":  10.0,  "fl_hy":  51.57,  "fl_kn": -112.4,
+#     "fr_hx": -10.0,  "fr_hy":  51.57,  "fr_kn": -112.4,
+#     "hl_hx":  1.3,  "hl_hy":  63.11, "hl_kn": -86.11,
+#     "hr_hx": -1.3,  "hr_hy":  63.11, "hr_kn": -86.11,
+# }
+
+# 안정적인듯?
 _CROUCH_DEG = {
-    "fl_hx":  23.1,  "fl_hy":  68.3,  "fl_kn": -99.8,
-    "fr_hx": -23.1,  "fr_hy":  68.3,  "fr_kn": -99.8,
-    "hl_hx":  27.0,  "hl_hy":  63.11, "hl_kn": -86.11,
-    "hr_hx": -27.0,  "hr_hy":  63.11, "hr_kn": -86.11,
+    "fl_hx":  5.73,  "fl_hy":  70.1,  "fl_kn": -120.9,
+    "fr_hx": -5.73,  "fr_hy":  70.1,  "fr_kn": -120.9,
+    "hl_hx":  20.0,  "hl_hy":  63.11, "hl_kn": -86.11,
+    "hr_hx": -20.0,  "hr_hy":  63.11, "hr_kn": -86.11,
 }
 
 _CUBE_SCALE     = 0.05
@@ -128,10 +154,11 @@ class SpotAgent(BaseRobotAgent):
         self._cube_rb.GetRigidBodyEnabledAttr().Set(True)
         UsdPhysics.MassAPI.Apply(cube_prim).GetMassAttr().Set(0.01)
 
-        # 카메라 (setup 단계에서 prim 생성; 초기화는 post_reset)
+        # 카메라 (USE_REALSENSE=True 일 때만 활성화)
         self._rs_path    = None
         self._wrist_cam  = None
-        self._setup_realsense()
+        if C.USE_REALSENSE:
+            self._setup_realsense()
 
         # 상태 초기화
         self._init_internal_state(spawn)
@@ -617,7 +644,8 @@ class SpotAgent(BaseRobotAgent):
             if self._ganim_state == "idle":
                 self._gripped = False
                 self._set_cube_kinematic(False)
-                self._state = "DONE"
-                print(f"[{self.name}] DONE ✓")
+                self._state      = "WALKING"
+                self._state_step = 0
+                print(f"[{self.name}] 배치 완료 → WALKING 복귀")
 
         return cmd

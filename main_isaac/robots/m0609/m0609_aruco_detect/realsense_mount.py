@@ -3,8 +3,8 @@ import omni.usd
 
 REALSENSE_D455_USD_REL = "/Isaac/Sensors/Intel/RealSense/rsd455.usd"
 
-# color 카메라로 인정할 이름 키워드 (나머지는 비활성화)
-_COLOR_CAM_KEYWORDS = ("OV9782", "Color")
+# 이름에 "Color"가 있는 카메라만 활성 유지 (Left / Right / Depth 는 비활성화)
+_COLOR_CAM_KEYWORDS = ("Color",)
 
 
 def _get_assets_root():
