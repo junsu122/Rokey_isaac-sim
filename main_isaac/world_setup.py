@@ -4,7 +4,7 @@ main_isaac/world_setup.py
 창고 씬 공통 설정 (맵 로드 + 조명 + ArUco 박스).
 """
 from isaacsim.core.utils.prims import define_prim
-from pxr import Sdf, Gf, UsdGeom
+from pxr import Sdf, Gf, UsdGeom, Usd, UsdPhysics
 
 from robot_config import WAREHOUSE_USD, ARUCO_BOXES, POD_STACKS
 
@@ -31,6 +31,11 @@ def setup_warehouse(world) -> None:
         xf = UsdGeom.Xformable(prim)
         xf.ClearXformOpOrder()
         xf.AddTranslateOp().Set(Gf.Vec3d(*box["xyz"]))
+
+        # 중력 낙하 방지: RigidBodyAPI 가 있는 prim 을 kinematic 으로 설정
+        for p in Usd.PrimRange(prim):
+            if p.HasAPI(UsdPhysics.RigidBodyAPI):
+                UsdPhysics.RigidBodyAPI(p).GetKinematicEnabledAttr().Set(True)
 
         print(f"[WorldSetup] ArUco 박스 로드: {box['type']}  pos={box['xyz']}")
 

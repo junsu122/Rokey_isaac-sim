@@ -14,7 +14,7 @@ _M0609 = _BASE / "robots" / "m0609"     # main_isaac/robots/m0609/
 _DRONE = _BASE / "robots" / "drone"     # main_isaac/robots/drone/
 
 # ── 경로 설정 ─────────────────────────────────────────────────────────
-WAREHOUSE_USD     = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/warehouse_v7_test_ver5.usda"
+WAREHOUSE_USD     = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/warehouse_v7.usda"
 SPOT_SRC_DIR      = str(_SPOT  / "spot_test")
 M0609_SRC_DIR     = str(_M0609 / "m0609_aruco_detect")
 
@@ -81,17 +81,17 @@ ARUCO_BOXES = [
     {
         "type": "green_id0",
         "usd" : _ARUCO_USD_DIR + "/aruco_box_green_id0.usda",
-        "xyz" : (12.3,  9.9, 0.025),   # ★ M0609_A 앞 큐브 위치
+        "xyz" : (-13.0, 9.5, 1.0),   # ★ M0609_A 앞 큐브 위치
     },
     {
         "type": "red_id1",
         "usd" : _ARUCO_USD_DIR + "/aruco_box_red_id1.usda",
-        "xyz" : (12.3, -0.1, 0.025),   # ★ M0609_B 앞 큐브 위치
+        "xyz" : (-7.88, 1.64, 1.0),   # ★ M0609_B 앞 큐브 위치
     },
     {
         "type": "blue_id2",
         "usd" : _ARUCO_USD_DIR + "/aruco_box_blue_id2.usda",
-        "xyz" : (12.3, -10.1, 0.025),  # ★ M0609_C 앞 큐브 위치
+        "xyz" : (-9.63, -9.38, 1.0),  # ★ M0609_C 앞 큐브 위치
     },
 ]
 
@@ -104,9 +104,9 @@ ARUCO_BOXES = [
 _POD_USD = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/pod_stack_4_v2.usda"
 
 POD_STACKS = [
-    {"name": "PodStack_01", "usd": _POD_USD, "xyz": (-12.0, 7.35, 0.0), "yaw": 0.0},  # ★
-    {"name": "PodStack_02", "usd": _POD_USD, "xyz": (-10.3, 0.0, 0.0), "yaw": 0.0},  # ★
-    {"name": "PodStack_03", "usd": _POD_USD, "xyz": (-12.0, -7.5, 0.0), "yaw": 0.0},  # ★
+    {"name": "PodStack_01", "usd": _POD_USD, "xyz": (-11.3, 10.2, 0.0), "yaw": 0.0},  # ★
+    {"name": "PodStack_02", "usd": _POD_USD, "xyz": (-7.25, 0.0, 0.0), "yaw": 0.0},  # ★
+    {"name": "PodStack_03", "usd": _POD_USD, "xyz": (-11.3, -10.2, 0.0), "yaw": 0.0},  # ★
 ]
 
 ROBOT_REGISTRY = [
@@ -150,7 +150,7 @@ ROBOT_REGISTRY = [
     {
         "type"       : "m0609",
         "name"       : "M0609_A",
-        "spawn_xyz"  : (-13.2, 6.8, 0.0),
+        "spawn_xyz"  : (-13.0, 9.5, 0.0),
         "spawn_yaw"  : -90.0,
         "goal_xyz"   : (11.8, 9.6,  0.0),
         "scale"      : 2.0,
@@ -161,7 +161,7 @@ ROBOT_REGISTRY = [
     {
         "type"       : "m0609",
         "name"       : "M0609_B",
-        "spawn_xyz"  : (-10.8, 1.2, 0.0),
+        "spawn_xyz"  : (-7.88, 1.64, 0.0),
         "spawn_yaw"  : 180.0,
         "goal_xyz"   : (11.8, -0.4,  0.0),
         "scale"      : 2.0,
@@ -172,7 +172,7 @@ ROBOT_REGISTRY = [
     {
         "type"       : "m0609",
         "name"       : "M0609_C",
-        "spawn_xyz"  : (-10.8, -7.0, 0.0),
+        "spawn_xyz"  : (-9.63, -9.38, 0.0),
         "spawn_yaw"  : 90.0,
         "goal_xyz"   : (11.8, -10.4,  0.0),
         "scale"      : 2.0,

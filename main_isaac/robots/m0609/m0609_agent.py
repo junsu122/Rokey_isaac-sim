@@ -126,7 +126,7 @@ _CAM_CX, _CAM_CY = _CAM_RES[0] / 2.0, _CAM_RES[1] / 2.0
 _DIST_COEFFS   = [0.0] * 12
 
 _HOME_JOINTS   = ["joint_1","joint_2","joint_3","joint_4","joint_5","joint_6"]
-_HOME_DEG      = np.array([0.0, 0.0, 90.0, 0.0, 90.0, 0.0])  # joint_4 -90° → EE 아래 향함
+_HOME_DEG      = np.array([0.0, 0.0, 90.0, 90.0, 90.0, 0.0])  # joint_4 -90° → EE 아래 향함
 _HOME_TOL_DEG  = 1.0
 _SERVO_PX2WLD  = np.array([[0.0, -1.0], [-1.0, 0.0]])
 
