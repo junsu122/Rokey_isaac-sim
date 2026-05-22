@@ -101,12 +101,12 @@ ARUCO_BOXES = [
 #  xyz  : 스폰 위치 (x, y, z) [m]  ← 이 값을 수정해 위치 조정
 #  yaw  : 회전각 deg (Z축 기준, 기본 0)
 #
-_POD_USD = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/pod_stack_4_v2.usda"
+_POD_USD = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/pot_v1.usda"
 
 POD_STACKS = [
-    {"name": "PodStack_01", "usd": _POD_USD, "xyz": (-11.3, 10.2, 0.0), "yaw": 0.0},  # ★
-    {"name": "PodStack_02", "usd": _POD_USD, "xyz": (-7.25, 0.0, 0.0), "yaw": 0.0},  # ★
-    {"name": "PodStack_03", "usd": _POD_USD, "xyz": (-11.3, -10.2, 0.0), "yaw": 0.0},  # ★
+    {"name": "PodStack_01", "usd": _POD_USD, "xyz": (-12.5, 9.0, 0.0), "yaw": 0.0},  # ★
+    {"name": "PodStack_02", "usd": _POD_USD, "xyz": (-8.2, 1.5, 0.0), "yaw": 0.0},  # ★
+    {"name": "PodStack_03", "usd": _POD_USD, "xyz": (-9.7, -8.9, 0.0), "yaw": 0.0},  # ★
 ]
 
 ROBOT_REGISTRY = [
@@ -150,32 +150,36 @@ ROBOT_REGISTRY = [
     {
         "type"       : "m0609",
         "name"       : "M0609_A",
-        "spawn_xyz"  : (-13.0, 9.5, 0.0),
+        "spawn_xyz"  : (-12.7, 9.00, 0.93),   # staging_platform_north / post_nw 위
         "spawn_yaw"  : -90.0,
-        "goal_xyz"   : (11.8, 9.6,  0.0),
+        "goal_xyz"   : (-12.7, 9.00, 1.1),
         "scale"      : 2.0,
-        "box_type"   : "green_id0",     # ★ ARUCO_BOXES 에서 연결할 박스
+        "box_type"   : "blue_id2",
+        "aruco_box_wh": (0.30, 0.30),           # zone2 박스 bw=0.3 bd=0.3
     },
 
     # ── M0609 #2 ────────────────────────────────────────────────────
     {
         "type"       : "m0609",
         "name"       : "M0609_B",
-        "spawn_xyz"  : (-7.88, 1.64, 0.0),
+        "spawn_xyz"  : (-9.45, 0.79, 0.93),    # staging_platform_west / post_nw 위
         "spawn_yaw"  : 180.0,
-        "goal_xyz"   : (11.8, -0.4,  0.0),
+        "goal_xyz"   : (-8.2, 1.5, 1.1),
         "scale"      : 2.0,
         "box_type"   : "red_id1",
+        "aruco_box_wh": (0.25, 0.25),           # zone1 박스 bw=0.25 bd=0.25
     },
 
     # ── M0609 #3 ────────────────────────────────────────────────────
     {
         "type"       : "m0609",
         "name"       : "M0609_C",
-        "spawn_xyz"  : (-9.63, -9.38, 0.0),
+        "spawn_xyz"  : (-10.45, -7.80, 0.91),  # staging_platform_south / post_nw 위
         "spawn_yaw"  : 90.0,
-        "goal_xyz"   : (11.8, -10.4,  0.0),
+        "goal_xyz"   : (-9.7, -8.9, 1.1),
         "scale"      : 2.0,
-        "box_type"   : "blue_id2",
+
+        "box_type"   : "green_id0",
+        "aruco_box_wh": (0.20, 0.15),           # zone0 박스 bw=0.2 bd=0.15
     },
 ]

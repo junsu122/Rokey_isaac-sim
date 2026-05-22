@@ -126,7 +126,7 @@ _CAM_CX, _CAM_CY = _CAM_RES[0] / 2.0, _CAM_RES[1] / 2.0
 _DIST_COEFFS   = [0.0] * 12
 
 _HOME_JOINTS   = ["joint_1","joint_2","joint_3","joint_4","joint_5","joint_6"]
-_HOME_DEG      = np.array([0.0, 0.0, 90.0, 90.0, 90.0, 0.0])  # joint_4 -90° → EE 아래 향함
+_HOME_DEG      = np.array([90.0, 0.0, 70.0, 10.0, 100.0, 0.0])  # joint_4 -90° → EE 아래 향함
 _HOME_TOL_DEG  = 1.0
 _SERVO_PX2WLD  = np.array([[0.0, -1.0], [-1.0, 0.0]])
 
@@ -138,12 +138,15 @@ _EVENTS_DT     = [0.008, 0.005, 0.02, 0.02, 0.005, 0.01, 0.005, 0.05, 0.008, 0.0
 # EE(link_6)와 큐브 픽업 위치 사이 거리가 이 값 이하일 때 큐브를 흡착
 # 그리퍼 총 길이(_SUCTION_STEM_HEIGHT + _SUCTION_PAD_HEIGHT) + 여유 ← 수정 가능
 _ATTACH_REACH   = _SUCTION_STEM_HEIGHT + _SUCTION_PAD_HEIGHT + 0.045   # [m]
-# EE XY와 목표(place) 위치 XY 거리가 이 값 이하일 때 큐브를 해제    ← 수정 가능
-_DETACH_XY_TOL  = 0.08   # [m]
 
 _CUBE_EDGE     = 0.05
 _ARUCO_LEN     = 0.045 * (600 / 720)   # ≈ 0.0375 m  (USDA 박스 고정 크기 기준)
 _ARUCO_Z_OFF   = _CUBE_EDGE / 2.0 + 0.001  # 0.026 m
+
+# 새 pick 로직 파라미터
+_PICK_ABOVE_H  = 0.5    # [m] 마커 위 접근 높이
+_APPROACH_TOL  = 0.08   # [m] RMPFlow 목표 도달 판정 거리
+_MOVEL_STEPS   = 60     # MOVEL 보간 스텝 수
 
 # box_type → ArUco ID 매핑
 _ARUCO_ID_FROM_BOX = {
@@ -173,10 +176,26 @@ class M0609Agent(BaseRobotAgent):
         goal_xyz = np.array(self.cfg["goal_xyz"])
 
         self._aruco_id   = _ARUCO_ID_FROM_BOX.get(box_type, 1)
-        self._aruco_len  = _ARUCO_LEN
         self._goal_pos   = goal_xyz
 
-        # ScaleOp은 visual만 스케일. physics 파라미터는 URDF 원본 단위 그대로.
+        # ArUco marker_length = 박스 짧은 면 × 0.9 (plane 크기) × (600/720) (quiet zone 제외)
+        # aruco_box_wh 없으면 USDA 고정 박스(0.05m face) 기준 폴백
+        wh = self.cfg.get("aruco_box_wh", None)
+        if wh is not None:
+            self._aruco_len = min(wh[0], wh[1]) * 0.9 * (600.0 / 720.0)
+            # AutoSpawnPanel 박스: ArUco plane 이 박스 위 2mm 에 위치
+            # _aruco_to_world 가 반환하는 mw 는 plane 중심 → pick 은 plane 바로 아래(박스 윗면)
+            self._aruco_z_off = 0.002
+        else:
+            self._aruco_len   = _ARUCO_LEN
+            # USDA 박스: marker 가 박스 표면에 직접 있음 → 절반 두께만큼 아래가 픽업 지점
+            self._aruco_z_off = _ARUCO_Z_OFF
+
+        # ScaleOp 이 물리에도 적용되어 팔 길이가 scale 배가 됨.
+        # RMPFlow 는 1x URDF 로 IK 계산 → physics EE = 2*rmpflow_target - base.
+        # _apply_ee 에서 rmpflow_target = base + (target - base) / scale 로 보정.
+        self._scale       = scale
+        self._base_pos    = np.array(spawn, dtype=np.float64)
         self._ee_init_h   = _EE_INIT_H
         self._ee_offset   = _EE_OFFSET
         self._attach_reach = _ATTACH_REACH * scale
@@ -320,7 +339,7 @@ class M0609Agent(BaseRobotAgent):
             return
         self._phys_cnt += 1
         if self._gripped:
-            self._update_gripped_cube()
+            self._update_gripped_box()
         if self._phys_cnt % _FSM_EVERY != 0:
             return
         self._run_fsm()
@@ -424,19 +443,17 @@ class M0609Agent(BaseRobotAgent):
     # ══════════════════════════════════════════════════════════════════
 
     def _init_state(self, spawn):
-        self._phys_cnt          = 0
-        self._state             = "MOVE_TO_HOME"
-        self._servo_hold_z      = None
-        self._servo_hold_ori    = None
-        self._pick_world_pos    = None
-        self._prev_ev           = -1
-        self._cur_ev            = -1
+        self._phys_cnt           = 0
+        self._state              = "MOVE_TO_HOME"
+        self._pick_world_pos     = None   # 실제 픽업 좌표 (마커 z - z_off)
+        self._pick_above_xyz     = None   # 픽업 접근 좌표 (마커 z + PICK_ABOVE_H)
+        self._goal_above_xyz     = None   # 플레이스 접근 좌표
         self._gripped            = False
-        self._grab_offset_local  = None   # EE 로컬 프레임 기준 cube 오프셋
-        self._det               = None
-        # EE 서보 허용 범위 — 스폰 위치 기준 ±2 m
-        self._ws_x = (float(spawn[0]) - 2.0, float(spawn[0]) + 2.0)
-        self._ws_y = (float(spawn[1]) - 2.0, float(spawn[1]) + 2.0)
+        self._grip_prim_path     = None   # 현재 흡착 중인 AutoBox prim 경로
+        self._grab_offset_local  = None
+        self._movel_wps          = None   # MOVEL 웨이포인트 배열
+        self._movel_step         = 0
+        self._det                = None
 
     def _setup_camera(self, stage, cam_parent_path: str):
         """RealSense D455 를 cam_parent_path prim 에 부착.
@@ -566,66 +583,145 @@ class M0609Agent(BaseRobotAgent):
         return (T_wg_cv @ T_cm)[:3, 3]
 
     def _apply_ee(self, target_pos, ori=None):
+        # scale 보정: physics EE = base + scale*(rmpflow_target - base)
+        # ∴ rmpflow_target = base + (target - base) / scale
+        t = np.asarray(target_pos, dtype=np.float64)
+        if self._scale != 1.0:
+            t = self._base_pos + (t - self._base_pos) / self._scale
         actions = self._cspace.forward(
-            target_end_effector_position=target_pos,
+            target_end_effector_position=t,
             target_end_effector_orientation=ori,
         )
         self._robot.apply_action(actions)
 
-    def _attach_cube(self):
-        """
-        흡착: physics/scene graph 변경 없이 EE 오프셋만 기록.
-        매 step set_world_pose() 로 큐브를 EE에 붙임 → tensor view 안전.
-        """
-        ee_pos, ee_q = self._robot.end_effector.get_world_pose()
-        cube_pos, _  = self._cube.get_world_pose()
-        R_ee = _quat_wxyz_to_R(ee_q)
-        self._grab_offset_local = R_ee.T @ (cube_pos - ee_pos)
-        print(f"[{self.name}] 흡착 완료")
+    def _start_movel(self, start: np.ndarray, end: np.ndarray,
+                     steps: int = _MOVEL_STEPS) -> None:
+        """world frame 직선 보간 시작."""
+        self._movel_wps  = np.linspace(start, end, steps)
+        self._movel_step = 0
 
-    def _update_gripped_cube(self):
+    def _step_movel(self) -> bool:
+        """웨이포인트 한 칸 전진. 완료 시 True 반환."""
+        if self._movel_wps is None or self._movel_step >= len(self._movel_wps):
+            return True
+        self._apply_ee(self._movel_wps[self._movel_step])
+        self._movel_step += 1
+        return self._movel_step >= len(self._movel_wps)
+
+    def _find_nearest_autobox(self, near_pos: np.ndarray,
+                               max_dist: float = 1.5) -> "str | None":
         """
-        매 physics step 호출.
-        physics_sim_view 의 set_world_pose / set_linear_velocity 는
-        tensor view 내부 write API 이므로 view invalidation 없음.
+        near_pos 의 XY 반경 max_dist 이내 AutoBox prim 경로를 반환.
+        AutoSpawnPanel 이 생성한 /World/AutoBox_XXXX 를 탐색.
         """
-        if self._grab_offset_local is None:
+        stage = omni.usd.get_context().get_stage()
+        best_path = None
+        best_dist = max_dist
+        for prim in stage.Traverse():
+            path = str(prim.GetPath())
+            if not path.startswith("/World/AutoBox_"):
+                continue
+            if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                continue
+            mat = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+            T   = np.array(mat, dtype=np.float64).T
+            pos = T[:3, 3]
+            # XY 거리만 비교 (높이 차이 무시)
+            d = float(np.linalg.norm(pos[:2] - near_pos[:2]))
+            if d < best_dist:
+                best_dist = d
+                best_path = path
+        return best_path
+
+    def _attach_autobox(self, prim_path: str) -> bool:
+        """
+        AutoBox 를 kinematic 으로 전환하고 EE 오프셋 기록.
+        이후 _update_gripped_box() 가 매 step USD translate 를 갱신.
+        """
+        stage = omni.usd.get_context().get_stage()
+        prim  = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            return False
+        # 물리 kinematic 전환 (중력 비활성화, USD 트랜스폼으로 제어)
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            UsdPhysics.RigidBodyAPI(prim).GetKinematicEnabledAttr().Set(True)
+        # 박스 현재 월드 위치
+        mat     = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+        T       = np.array(mat, dtype=np.float64).T
+        box_pos = T[:3, 3]
+        # EE → 박스 오프셋 (EE 로컬 좌표계)
+        ee_pos, ee_q = self._robot.end_effector.get_world_pose()
+        R_ee = _quat_wxyz_to_R(ee_q)
+        self._grip_prim_path    = prim_path
+        self._grab_offset_local = R_ee.T @ (box_pos - ee_pos)
+        self._gripped           = True
+        print(f"[{self.name}] 흡착 완료: {prim_path}  "
+              f"box={np.round(box_pos,3)}  ee={np.round(ee_pos,3)}")
+        return True
+
+    def _update_gripped_box(self):
+        """
+        매 physics step: 흡착된 AutoBox 를 EE 오프셋 위치로 이동.
+        kinematic rigid body 는 USD translate 를 physics 가 직접 읽음.
+        """
+        if not self._gripped or self._grip_prim_path is None \
+                or self._grab_offset_local is None:
             return
         ee_pos, ee_q = self._robot.end_effector.get_world_pose()
-        R_ee   = _quat_wxyz_to_R(ee_q)
-        target = ee_pos + R_ee @ self._grab_offset_local
-        self._cube.set_world_pose(position=target)
-        self._cube.set_linear_velocity(np.zeros(3))
-        self._cube.set_angular_velocity(np.zeros(3))
+        R_ee         = _quat_wxyz_to_R(ee_q)
+        target       = ee_pos + R_ee @ self._grab_offset_local
 
-    def _detach_cube(self):
+        stage = omni.usd.get_context().get_stage()
+        prim  = stage.GetPrimAtPath(self._grip_prim_path)
+        if not prim.IsValid():
+            self._gripped        = False
+            self._grip_prim_path = None
+            return
+        # kinematic body: translate op 갱신 → physics 가 해당 위치로 이동
+        xf = UsdGeom.Xformable(prim)
+        for op in xf.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                op.Set(Gf.Vec3d(float(target[0]),
+                                float(target[1]),
+                                float(target[2])))
+                break
+
+    def _detach_autobox(self):
         """
-        해제: 추적만 중단 — 큐브가 현재 위치에서 중력으로 낙하.
-        physics/scene graph 변경 없음 → tensor view 안전.
+        흡착 해제: kinematic → dynamic 전환 → 중력으로 낙하.
         """
+        if self._grip_prim_path is None:
+            self._gripped = False
+            return
+        stage = omni.usd.get_context().get_stage()
+        prim  = stage.GetPrimAtPath(self._grip_prim_path)
+        if prim.IsValid() and prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            UsdPhysics.RigidBodyAPI(prim).GetKinematicEnabledAttr().Set(False)
+        print(f"[{self.name}] 흡착 해제 → 낙하: {self._grip_prim_path}")
+        self._grip_prim_path    = None
         self._grab_offset_local = None
-        print(f"[{self.name}] 흡착 해제 (cube 낙하)")
+        self._gripped           = False
 
     def _display_label(self) -> str:
-        if self._state == "PICK_AND_PLACE":
-            if self._cur_ev <= 3:
-                return "Picking..."
-            if self._cur_ev <= 6:
-                return "Moving..."
+        if self._state in ("DESCEND_TO_GRIP", "LIFT_AFTER_GRIP"):
+            return "Picking..."
+        if self._state in ("MOVE_TO_GOAL", "DESCEND_TO_PLACE", "RETRACT_PLACE"):
             return "Placing..."
+        if self._gripped:
+            return "Carrying..."
         return "Detecting..."
 
     def _reset_for_next_cycle(self):
         """배치 완료 후 팔 복귀 → 대기 사이클 시작."""
         self._gripped            = False
+        self._grip_prim_path     = None
         self._grab_offset_local  = None
-        self._servo_hold_z       = None
-        self._servo_hold_ori     = None
         self._pick_world_pos     = None
-        self._prev_ev            = -1
-        self._cur_ev             = -1
+        self._pick_above_xyz     = None
+        self._goal_above_xyz     = None
+        self._movel_wps          = None
+        self._movel_step         = 0
         self._det                = None
-        self._pp.reset()
         self._state = "RETURN_TO_WATCH"
         print(f"[{self.name}] → RETURN_TO_WATCH")
 
@@ -636,8 +732,7 @@ class M0609Agent(BaseRobotAgent):
     def _run_fsm(self):
         robot  = self._robot
         joints = robot.get_joint_positions()
-        ee_pos, ee_ori = robot.end_effector.get_world_pose()
-        cur_xy = ee_pos[:2].copy()
+        ee_pos, _ = robot.end_effector.get_world_pose()
 
         rgb = self._wrist_cam.get_rgb() if self._wrist_cam else None
         det = None
@@ -661,15 +756,48 @@ class M0609Agent(BaseRobotAgent):
         elif self._state == "Detecting":
             robot.set_joint_positions(self._home_pos,
                                       joint_indices=self._home_idx)
+
+            # ── 진단 로그: 50 FSM 틱마다 검출 현황 출력 ─────────────
+            if self._phys_cnt % (50 * _FSM_EVERY) == 0:
+                if det is None:
+                    print(f"[{self.name}][Detecting] 카메라 프레임 없음 (wrist_cam 미초기화?)")
+                elif not det.found and not det.all_detected_ids:
+                    print(f"[{self.name}][Detecting] 아무 ArUco도 검출 안됨 (마커가 시야 밖이거나 대비 부족)")
+                elif not det.found:
+                    print(f"[{self.name}][Detecting] 검출된 IDs={det.all_detected_ids}, 목표 ID={self._aruco_id} 없음")
+                else:
+                    print(f"[{self.name}][Detecting] 목표 ID={self._aruco_id} 검출 중...")
+
             if det is not None and det.found:
-                self._servo_hold_z   = float(ee_pos[2])
-                self._servo_hold_ori = ee_ori.copy()
-                self._servo.reset()
-                self._state = "SERVO"
-                print(f"[{self.name}] Detecting → SERVO 발견")
+                mw = self._aruco_to_world(det, self._wrist_cam._prim_path)
+                cube_pos, _ = self._cube.get_world_pose()
+
+                # ── 진단 로그: 검출 즉시 상세 정보 출력 ─────────────
+                print(f"\n{'='*60}")
+                print(f"[{self.name}][DIAG] ArUco 검출 성공!")
+                print(f"[{self.name}][DIAG] tvec(카메라기준,m) = {np.round(det.tvec, 4) if det.tvec is not None else 'None'}")
+                print(f"[{self.name}][DIAG] mw(aruco→world) = {np.round(mw, 4) if mw is not None else 'None'}")
+                print(f"[{self.name}][DIAG] cube.get_world_pose = {np.round(cube_pos, 4)}")
+                print(f"[{self.name}][DIAG] EE 현재 위치      = {np.round(ee_pos, 4)}")
+                print(f"[{self.name}][DIAG] aruco_z_off       = {self._aruco_z_off}")
+                if mw is not None:
+                    diff = mw - cube_pos
+                    print(f"[{self.name}][DIAG] mw - cube_pos     = {np.round(diff, 4)}  (이 값이 크면 aruco_to_world 오차)")
+                print(f"{'='*60}\n")
+
+                if mw is not None:
+                    pick_z               = mw[2] - self._aruco_z_off
+                    self._pick_world_pos = np.array([mw[0], mw[1], pick_z])
+                    self._pick_above_xyz = np.array([mw[0], mw[1], pick_z + _PICK_ABOVE_H])
+                    self._goal_above_xyz = np.array([self._goal_pos[0],
+                                                     self._goal_pos[1],
+                                                     self._goal_pos[2] + _PICK_ABOVE_H])
+                    self._state = "APPROACH_ABOVE"
+                    print(f"[{self.name}] Detecting → APPROACH_ABOVE")
+                    print(f"[{self.name}]   pick_world_pos = {self._pick_world_pos.round(3)}")
+                    print(f"[{self.name}]   pick_above_xyz = {self._pick_above_xyz.round(3)}")
 
         # ── RETURN_TO_WATCH ──────────────────────────────────────────
-        # 픽 앤 플레이스 완료 후 홈 복귀 → Detecting 재개
         elif self._state == "RETURN_TO_WATCH":
             robot.set_joint_positions(self._home_pos,
                                       joint_indices=self._home_idx)
@@ -678,59 +806,79 @@ class M0609Agent(BaseRobotAgent):
                 self._state = "Detecting"
                 print(f"[{self.name}] 홈 복귀 완료 → Detecting")
 
-        # ── SERVO ─────────────────────────────────────────────────────
-        elif self._state == "SERVO":
-            if det is not None:
-                tgt_xy, _ = self._servo.update(cur_xy, det)
-            else:
-                self._servo.reset()
-                tgt_xy = cur_xy.copy()
+        # ── APPROACH_ABOVE ───────────────────────────────────────────
+        # RMPFlow 로 픽업 위치 0.5 m 위까지 이동
+        elif self._state == "APPROACH_ABOVE":
+            self._apply_ee(self._pick_above_xyz)
+            dist = np.linalg.norm(ee_pos - self._pick_above_xyz)
+            # 10 FSM 틱마다 EE 위치 vs 목표 출력
+            if self._phys_cnt % (10 * _FSM_EVERY) == 0:
+                rmpflow_t = self._base_pos + (self._pick_above_xyz - self._base_pos) / self._scale
+                print(f"[{self.name}][APPROACH] EE={np.round(ee_pos,3)}  "
+                      f"target={np.round(self._pick_above_xyz,3)}  "
+                      f"rmpflow_sends={np.round(rmpflow_t,3)}  dist={dist:.3f}m")
+            if dist < _APPROACH_TOL:
+                print(f"[{self.name}][APPROACH] 도달!  EE={np.round(ee_pos,3)}  target={np.round(self._pick_above_xyz,3)}")
+                self._start_movel(ee_pos, self._pick_world_pos)
+                self._state = "DESCEND_TO_GRIP"
+                print(f"[{self.name}] APPROACH_ABOVE 도달 → DESCEND_TO_GRIP")
 
-            tgt_xy[0] = np.clip(tgt_xy[0], *self._ws_x)
-            tgt_xy[1] = np.clip(tgt_xy[1], *self._ws_y)
-            self._apply_ee(np.array([tgt_xy[0], tgt_xy[1], self._servo_hold_z]),
-                           self._servo_hold_ori)
-
-            if self._servo.is_locked() and det is not None:
-                mw = self._aruco_to_world(det, self._wrist_cam._prim_path)
-                if mw is None:
-                    self._servo.reset()
-                else:
-                    self._pick_world_pos = np.array([mw[0], mw[1],
-                                                     mw[2] - _ARUCO_Z_OFF])
-                    self._pp.reset()
-                    self._prev_ev = -1
-                    self._state   = "PICK_AND_PLACE"
-                    print(f"[{self.name}] → PICK_AND_PLACE  pick={self._pick_world_pos.round(3)}")
-
-        # ── PICK_AND_PLACE ────────────────────────────────────────────
-        elif self._state == "PICK_AND_PLACE":
-            actions = self._pp.forward(
-                picking_position=self._pick_world_pos,
-                placing_position=self._goal_pos,
-                current_joint_positions=joints,
-                end_effector_offset=self._ee_offset,
-            )
-            robot.apply_action(actions)
-            ev = getattr(self._pp, "_event", -1)
-            self._cur_ev = ev
-
-            if not self._gripped:
-                # EE ↔ 큐브 거리 < 그리퍼 도달 범위 → 흡착
+        # ── DESCEND_TO_GRIP ──────────────────────────────────────────
+        # 픽업 위치까지 직선 하강 (MOVEL)
+        elif self._state == "DESCEND_TO_GRIP":
+            done = self._step_movel()
+            if done:
                 dist = float(np.linalg.norm(ee_pos - self._pick_world_pos))
-                if dist < self._attach_reach:
-                    self._attach_cube()
-                    self._gripped = True
-                    print(f"[{self.name}] 흡착! dist={dist:.3f}m")
-            else:
-                # EE XY ↔ 목표 XY 거리 < 임계 → 해제
-                xy_dist = float(np.linalg.norm(ee_pos[:2] - self._goal_pos[:2]))
-                if xy_dist < _DETACH_XY_TOL:
-                    self._detach_cube()
-                    self._gripped = False
+                print(f"[{self.name}][DESCEND] 완료  EE={np.round(ee_pos,3)}  "
+                      f"pick_target={np.round(self._pick_world_pos,3)}  dist={dist:.3f}m")
+                # pick_world_pos XY 기준으로 근처 AutoBox 탐색 후 흡착
+                box_path = self._find_nearest_autobox(self._pick_world_pos, max_dist=1.5)
+                if box_path:
+                    self._attach_autobox(box_path)
+                else:
+                    print(f"[{self.name}] 흡착 실패: 근처에 AutoBox 없음 "
+                          f"(pick_pos={np.round(self._pick_world_pos,3)})")
+                # 성공/실패 무관하게 위로 올라감
+                self._start_movel(ee_pos, self._pick_above_xyz)
+                self._state = "LIFT_AFTER_GRIP"
+                print(f"[{self.name}] DESCEND_TO_GRIP 완료 → LIFT_AFTER_GRIP")
 
-            self._prev_ev = ev
-            if self._pp.is_done():
+        # ── LIFT_AFTER_GRIP ──────────────────────────────────────────
+        # 픽업 후 0.5 m 위로 올라가기 (MOVEL)
+        elif self._state == "LIFT_AFTER_GRIP":
+            done = self._step_movel()
+            if done:
+                self._state = "MOVE_TO_GOAL"
+                print(f"[{self.name}] LIFT 완료 → MOVE_TO_GOAL  goal_above={self._goal_above_xyz.round(3)}")
+
+        # ── MOVE_TO_GOAL ─────────────────────────────────────────────
+        # RMPFlow 로 목표 위치 0.5 m 위까지 이동
+        elif self._state == "MOVE_TO_GOAL":
+            self._apply_ee(self._goal_above_xyz)
+            dist = np.linalg.norm(ee_pos - self._goal_above_xyz)
+            if dist < _APPROACH_TOL:
+                goal_xyz = np.array([self._goal_pos[0],
+                                     self._goal_pos[1],
+                                     self._goal_pos[2]])
+                self._start_movel(ee_pos, goal_xyz)
+                self._state = "DESCEND_TO_PLACE"
+                print(f"[{self.name}] MOVE_TO_GOAL 도달 → DESCEND_TO_PLACE")
+
+        # ── DESCEND_TO_PLACE ─────────────────────────────────────────
+        # 목표 위치까지 직선 하강 후 해제 (MOVEL)
+        elif self._state == "DESCEND_TO_PLACE":
+            done = self._step_movel()
+            if done:
+                self._detach_autobox()          # kinematic → dynamic → 낙하
+                self._start_movel(ee_pos, self._goal_above_xyz)
+                self._state = "RETRACT_PLACE"
+                print(f"[{self.name}] PLACE 완료 → RETRACT_PLACE")
+
+        # ── RETRACT_PLACE ────────────────────────────────────────────
+        # 플레이스 후 0.5 m 위로 후퇴 (MOVEL)
+        elif self._state == "RETRACT_PLACE":
+            done = self._step_movel()
+            if done:
                 print(f"[{self.name}] 배치 완료 → Detecting 재시작")
                 self._reset_for_next_cycle()
 
@@ -754,9 +902,22 @@ def _quat_wxyz_to_R(q):
 
 
 def _get_world_T(prim_path: str) -> np.ndarray:
+    """
+    prim 의 local→world 변환을 반환.
+    부모 ScaleOp(예: scale=2.0)가 rotation 컬럼에 흡수되어 있으므로
+    각 컬럼을 정규화해 순수 rotation + translation 만 추출.
+    정규화하지 않으면 tvec(미터 단위)에 scale 이 곱해져
+    _aruco_to_world 가 2배 먼 위치를 반환하는 버그가 발생함.
+    """
     stage = omni.usd.get_context().get_stage()
     prim  = stage.GetPrimAtPath(prim_path)
     mat   = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
-    return np.array(mat, dtype=np.float64).T
+    T = np.array(mat, dtype=np.float64).T
+    # rotation 컬럼의 스케일 제거 (컬럼 노름 = scale 값)
+    for i in range(3):
+        col_norm = np.linalg.norm(T[:3, i])
+        if col_norm > 1e-9:
+            T[:3, i] /= col_norm
+    return T
 
 

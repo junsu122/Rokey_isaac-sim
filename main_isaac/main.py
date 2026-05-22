@@ -39,6 +39,7 @@ from isaacsim.core.api import World
 
 from robot_config import PHYSICS_DT, RENDERING_DT, ROBOT_REGISTRY
 from world_setup import setup_warehouse
+from auto_spawn_panel import AutoSpawnPanel
 
 #########################################################로봇 추가 부분
 from robots.spot.spot_agent  import SpotAgent
@@ -95,6 +96,9 @@ for _ in range(30):
 for agent in agents:
     agent.post_reset()
 
+# ── AutoSpawnPanel 초기화 (world.reset() 이후에 생성) ─────────────────
+spawn_panel = AutoSpawnPanel(my_world)
+
 # ── physics 콜백 ──────────────────────────────────────────────────────
 _step_count  = 0
 _GLOBAL_WARM = 30   # 전 에이전트 공통 워밍업 (physics 안정 대기)
@@ -116,11 +120,15 @@ my_world.add_physics_callback("multi_robot_step", callback_fn=_on_physics_step)
 
 # ── 메인 루프 ─────────────────────────────────────────────────────────
 print("[main] 시뮬레이션 시작")
+_frame = 0
 try:
     while simulation_app.is_running():
         my_world.step(render=True)
         for agent in agents:
             agent.on_render_step()
+        _frame += 1
+        if _frame % 60 == 0:
+            spawn_panel.tick()
 finally:
     my_world.clear()
     simulation_app.close()

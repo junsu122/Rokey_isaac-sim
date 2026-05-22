@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List
 
 
 @dataclass
@@ -19,6 +19,7 @@ class ArucoDetection:
     corners: Optional[np.ndarray] = None      # (4, 2) image pixel coords
     rvec: Optional[np.ndarray] = None         # (3,) Rodrigues, marker in camera frame
     tvec: Optional[np.ndarray] = None         # (3,) translation in camera frame (m)
+    all_detected_ids: List[int] = field(default_factory=list)  # 이미지에서 검출된 모든 ID
 
 
 class ArucoTracker:
@@ -65,6 +66,17 @@ class ArucoTracker:
             [-half, -half, 0.0],
         ], dtype=np.float32)
 
+    def set_marker_length(self, marker_length: float) -> None:
+        """박스 크기 변경 시 marker_length 와 _obj_points 를 동시에 갱신."""
+        self.marker_length = float(marker_length)
+        half = self.marker_length / 2.0
+        self._obj_points = np.array([
+            [-half,  half, 0.0],
+            [ half,  half, 0.0],
+            [ half, -half, 0.0],
+            [-half, -half, 0.0],
+        ], dtype=np.float32)
+
     def set_intrinsics(self, K: np.ndarray, dist_coeffs: Optional[np.ndarray] = None):
         self.K = np.asarray(K, dtype=np.float64)
         if dist_coeffs is not None:
@@ -81,12 +93,15 @@ class ArucoTracker:
             return ArucoDetection(found=False)
 
         ids_flat = ids.flatten()
+        all_ids  = ids_flat.tolist()          # 이미지에서 검출된 전체 ID 목록
+
         if self.target_id is None:
             idx = 0
         else:
             matches = np.where(ids_flat == int(self.target_id))[0]
             if len(matches) == 0:
-                return ArucoDetection(found=False)
+                # 목표 ID 없음 — 어떤 ID가 검출됐는지 담아서 반환
+                return ArucoDetection(found=False, all_detected_ids=all_ids)
             idx = int(matches[0])
 
         corner = corners_list[idx][0]   # (4, 2)
@@ -115,6 +130,7 @@ class ArucoTracker:
             marker_id=int(ids_flat[idx]),
             corners=corner.copy(),
             rvec=rvec, tvec=tvec,
+            all_detected_ids=all_ids,
         )
 
     def annotate(self, bgr: np.ndarray, det: ArucoDetection) -> np.ndarray:
