@@ -14,7 +14,7 @@ _M0609 = _BASE / "robots" / "m0609"     # main_isaac/robots/m0609/
 _DRONE = _BASE / "robots" / "drone"     # main_isaac/robots/drone/
 
 # ── 경로 설정 ─────────────────────────────────────────────────────────
-WAREHOUSE_USD     = "/home/rokey/gidong_ws/Rokey_isaac-sim-main/main_isaac/usd/warehouse_v7_props.usd"
+WAREHOUSE_USD     = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/warehouse_v7_test_ver5.usda"
 SPOT_SRC_DIR      = str(_SPOT  / "spot_test")
 M0609_SRC_DIR     = str(_M0609 / "m0609_aruco_detect")
 
@@ -70,6 +70,45 @@ USE_REALSENSE = True
 
 
 
+# ── ArUco 마커 박스 설정 ─────────────────────────────────────────────
+#
+#  type    : "green_id0" | "red_id1" | "blue_id2"
+#  xyz     : 스폰 위치 (x, y, z) [m]  ← 이 값을 수정해 위치 조정
+#
+_ARUCO_USD_DIR = "/home/rokey/Rokey_isaac-sim/aruco_marker_box/usd"
+
+ARUCO_BOXES = [
+    {
+        "type": "green_id0",
+        "usd" : _ARUCO_USD_DIR + "/aruco_box_green_id0.usda",
+        "xyz" : (12.3,  9.9, 0.025),   # ★ M0609_A 앞 큐브 위치
+    },
+    {
+        "type": "red_id1",
+        "usd" : _ARUCO_USD_DIR + "/aruco_box_red_id1.usda",
+        "xyz" : (12.3, -0.1, 0.025),   # ★ M0609_B 앞 큐브 위치
+    },
+    {
+        "type": "blue_id2",
+        "usd" : _ARUCO_USD_DIR + "/aruco_box_blue_id2.usda",
+        "xyz" : (12.3, -10.1, 0.025),  # ★ M0609_C 앞 큐브 위치
+    },
+]
+
+# ── Pod Stack 설정 ────────────────────────────────────────────────────
+#
+#  usd  : pod_stack_4_v2.usda 파일 경로 (고정)
+#  xyz  : 스폰 위치 (x, y, z) [m]  ← 이 값을 수정해 위치 조정
+#  yaw  : 회전각 deg (Z축 기준, 기본 0)
+#
+_POD_USD = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/pod_stack_4_v2.usda"
+
+POD_STACKS = [
+    {"name": "PodStack_01", "usd": _POD_USD, "xyz": (-12.0, 7.35, 0.0), "yaw": 0.0},  # ★
+    {"name": "PodStack_02", "usd": _POD_USD, "xyz": (-10.3, 0.0, 0.0), "yaw": 0.0},  # ★
+    {"name": "PodStack_03", "usd": _POD_USD, "xyz": (-12.0, -7.5, 0.0), "yaw": 0.0},  # ★
+]
+
 ROBOT_REGISTRY = [
 
     # ── Drone #1 ────────────────────────────────────────────────────
@@ -111,32 +150,32 @@ ROBOT_REGISTRY = [
     {
         "type"       : "m0609",
         "name"       : "M0609_A",
-        "spawn_xyz"  : (12.0,  10.0, 0.0),
-        "spawn_yaw"  : 0.0,
-        "cube_xyz"   : (12.3, 9.9, 0.025),
+        "spawn_xyz"  : (-13.2, 6.8, 0.0),
+        "spawn_yaw"  : -90.0,
         "goal_xyz"   : (11.8, 9.6,  0.0),
-        "scale" : 1.0,                  # ★ 크기 배율 (1.0 = 5 cm 큐브)
+        "scale"      : 2.0,
+        "box_type"   : "green_id0",     # ★ ARUCO_BOXES 에서 연결할 박스
     },
 
     # ── M0609 #2 ────────────────────────────────────────────────────
     {
         "type"       : "m0609",
         "name"       : "M0609_B",
-        "spawn_xyz"  : (12.0,  0.0, 0.0),
-        "spawn_yaw"  : 0.0,
-        "cube_xyz"   : (12.3, -0.1, 0.025),
+        "spawn_xyz"  : (-10.8, 1.2, 0.0),
+        "spawn_yaw"  : 180.0,
         "goal_xyz"   : (11.8, -0.4,  0.0),
-        "scale" : 2.0,
+        "scale"      : 2.0,
+        "box_type"   : "red_id1",
     },
 
     # ── M0609 #3 ────────────────────────────────────────────────────
     {
         "type"       : "m0609",
         "name"       : "M0609_C",
-        "spawn_xyz"  : (12.0, -10.0, 0.0),
-        "spawn_yaw"  : 0.0,
-        "cube_xyz"   : (12.3, -10.1, 0.025),
+        "spawn_xyz"  : (-10.8, -7.0, 0.0),
+        "spawn_yaw"  : 90.0,
         "goal_xyz"   : (11.8, -10.4,  0.0),
-        "scale" : 3.0,
+        "scale"      : 2.0,
+        "box_type"   : "blue_id2",
     },
 ]
