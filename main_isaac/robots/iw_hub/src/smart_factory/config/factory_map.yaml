@@ -1,0 +1,27 @@
+waypoints:
+  IN_A: [0, 0]
+  IN_B: [0, 4]
+  SORT_RED: [6, 0]
+  SORT_BLUE: [6, 4]
+  STACK: [5, 2]
+  CHARGE: [1, 2]
+blocked:
+  - [3, 1]
+  - [3, 2]
+  - [3, 3]
+robots:
+  - id: iw_hub_01
+    start: CHARGE
+  - id: iw_hub_02
+    start: N1_4
+tasks:
+  - id: box_001
+    cargo_type: red
+    pickup: IN_A
+    dropoff: SORT_RED
+    priority: 2
+  - id: box_002
+    cargo_type: blue
+    pickup: IN_B
+    dropoff: SORT_BLUE
+    priority: 1

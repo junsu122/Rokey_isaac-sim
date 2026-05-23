@@ -28,13 +28,13 @@ def normalize_angle(a: float) -> float:
 # ── 창고 웨이포인트 (warehouse_v7 기준) ──────────────────────────────
 # ★ 실제 창고 좌표에 맞게 수정 필요
 WAYPOINTS: dict[str, tuple[float, float]] = {
-    "WAIT_1":   (-10.0,  7.0),   # ★ 대기 위치 1
-    "WAIT_2":   (-10.0,  0.0),   # ★ 대기 위치 2
-    "WAIT_3":   (-10.0, -7.0),   # ★ 대기 위치 3
-    "STACK_1":  (-12.0,  7.35),  # PodStack_01 픽업 위치
-    "STACK_2":  (-10.3,  0.0),   # PodStack_02 픽업 위치
-    "STACK_3":  (-12.0, -7.5),   # PodStack_03 픽업 위치
-    "UNLOAD_1": ( 11.8,  9.6),   # M0609_A 언로드 위치
-    "UNLOAD_2": ( 11.8, -0.4),   # M0609_B 언로드 위치
-    "UNLOAD_3": ( 11.8, -10.4),  # M0609_C 언로드 위치
+    "WAIT_1":   ( -8.0, -14.0),  # iw_hub_01 대기 위치 (= 스폰 위치)
+    "WAIT_2":   ( -9.0, -14.0),  # 예비 대기 위치
+    "WAIT_3":   (-10.0, -14.0),  # iw_hub_02 대기 위치 (= 스폰 위치)
+    "STACK_1":  (-12.8,  9.0),   # PodStack_01 픽업 위치 (robot_config.py 기준)
+    "STACK_2":  ( -8.2,  1.5),   # PodStack_02 픽업 위치 (robot_config.py 기준)
+    "STACK_3":  ( -9.7, -8.9),   # PodStack_03 픽업 위치 (robot_config.py 기준)
+    "UNLOAD_1": (  4.0, -13.0),  # 언로드 위치 1
+    "UNLOAD_2": (  4.0,  -3.0),  # 언로드 위치 2
+    "UNLOAD_3": (  4.0,   7.0),  # 언로드 위치 3
 }
