@@ -13,7 +13,7 @@ import numpy as np
 import carb
 import omni.usd
 from scipy.spatial.transform import Rotation as R
-from pxr import Gf, UsdGeom, Sdf, UsdPhysics, Usd
+from pxr import Gf, UsdGeom, UsdPhysics, Usd
 
 from isaacsim.core.utils.prims import define_prim
 from isaacsim.storage.native import get_assets_root_path
@@ -94,11 +94,7 @@ _CROUCH_DEG = {
     "hr_hx": -20.0,  "hr_hy":  63.11, "hr_kn": -86.11,
 }
 
-_CUBE_SCALE     = 0.05
-_BLUE_LOWER     = np.array([100, 120,  80])
-_BLUE_UPPER     = np.array([130, 255, 255])
-_MIN_AREA       = 300
-_CENTER_TOL     = 0.25
+_MIN_AREA       = 300    # ArUco 마커 최소 픽셀 면적 (너무 작으면 무시)
 _STOP_DIST      = 0.65
 _APPROACH_DIST  = 1.2
 _HOME_DIST      = 0.45
@@ -119,10 +115,19 @@ class SpotAgent(BaseRobotAgent):
     def setup(self) -> None:
         assets_root  = get_assets_root_path()
         spot_usd     = assets_root + "/Isaac/Robots/BostonDynamics/spot/spot.usd"
-        gripper_path = f"/World/{self.name}_Gripper"   # Spot 자식이 아닌 World 직속
-        cube_path    = f"/World/{self.name}_Cube"
+        gripper_path = f"/World/{self.name}_Gripper"
         spawn        = self.spawn_xyz
-        cube_xyz     = tuple(self.cfg.get("cube_xyz", (spawn[0]+3, spawn[1], _CUBE_SCALE/2)))
+
+        # ArUco ID → 목표 XY 매핑 (robot_config 에서 로드)
+        # 키를 int로 변환 (JSON 은 str 키로 올 수 있음)
+        raw_goals = self.cfg.get("aruco_goals", {})
+        self._aruco_goals = {int(k): np.array(v, dtype=np.float64)
+                             for k, v in raw_goals.items()}
+
+        # ArUco 검출기 (ID 검출 전용, pose 추정 불필요)
+        _dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
+        self._aruco_detector = cv2.aruco.ArucoDetector(
+            _dict, cv2.aruco.DetectorParameters())
 
         # Spot
         self._spot = SpotFlatTerrainPolicy(
@@ -132,29 +137,14 @@ class SpotAgent(BaseRobotAgent):
             position=np.array(spawn, dtype=np.float64),
         )
 
-        # 그리퍼 (USD 파일 직접 참조)
+        # 그리퍼
         self._gripper_path    = gripper_path
         self._gripper_ab_path = f"{gripper_path}/angle_bracket"
         gxf = define_prim(gripper_path, "Xform")
         gxf.GetReferences().AddReference(C.SPOT_GRIPPER_USD)
         self._remove_gripper_physics()
 
-        # 블루 큐브
-        self._cube_path = cube_path
-        cube_prim = define_prim(cube_path, "Cube")
-        self._cube_xf = UsdGeom.Xformable(cube_prim)
-        self._cube_xf.ClearXformOpOrder()
-        self._cube_t_op = self._cube_xf.AddTranslateOp()
-        self._cube_t_op.Set(Gf.Vec3d(*cube_xyz))
-        self._cube_xf.AddScaleOp().Set(Gf.Vec3f(_CUBE_SCALE, _CUBE_SCALE, _CUBE_SCALE))
-        cube_prim.CreateAttribute("primvars:displayColor",
-                                  Sdf.ValueTypeNames.Color3fArray).Set([Gf.Vec3f(0, 0.2, 1)])
-        UsdPhysics.CollisionAPI.Apply(cube_prim)
-        self._cube_rb = UsdPhysics.RigidBodyAPI.Apply(cube_prim)
-        self._cube_rb.GetRigidBodyEnabledAttr().Set(True)
-        UsdPhysics.MassAPI.Apply(cube_prim).GetMassAttr().Set(0.01)
-
-        # 카메라 (USE_REALSENSE=True 일 때만 활성화)
+        # 카메라
         self._rs_path    = None
         self._wrist_cam  = None
         if C.USE_REALSENSE:
@@ -162,7 +152,8 @@ class SpotAgent(BaseRobotAgent):
 
         # 상태 초기화
         self._init_internal_state(spawn)
-        print(f"[{self.name}] setup 완료  spawn={spawn}  cube={cube_xyz}")
+        print(f"[{self.name}] setup 완료  spawn={spawn}  "
+              f"aruco_goals={list(self._aruco_goals.keys())}")
 
     # ── post_reset ───────────────────────────────────────────────────
     def post_reset(self) -> None:
@@ -212,38 +203,47 @@ class SpotAgent(BaseRobotAgent):
         self._sync_gripper()
         self._update_gripper_anim()
         if self._gripped:
-            self._sync_cube_to_gripper()
+            self._sync_autobox_to_gripper()
 
     # ── 내부 초기화 ──────────────────────────────────────────────────
 
     def _init_internal_state(self, spawn):
-        self._gripper_t_op  = None
-        self._gripper_o_op  = None
-        self._cur_g_off     = _GRIPPER_OFF_NORMAL.copy()
-        self._g_world_pos   = np.zeros(3)
-        self._g_world_rot   = R.identity()
-        self._finger_data   = {}
-        self._ganim_state   = "idle"
-        self._ganim_step    = 0
-        self._crouch_idx    = None
-        self._crouch_tgt    = None
-        self._lower_start   = None
-        self._state         = "WALKING"
-        self._state_step    = 0
-        self._cube_nav      = None
-        self._gripped       = False
-        self._det_cnt       = 0
-        self._warmup_cnt    = 0
-        self._stab_cnt      = 0
-        self._initialized   = False
-        self._stable        = False
+        self._gripper_t_op      = None
+        self._gripper_o_op      = None
+        self._cur_g_off         = _GRIPPER_OFF_NORMAL.copy()
+        self._g_world_pos       = np.zeros(3)
+        self._g_world_rot       = R.identity()
+        self._finger_data       = {}
+        self._ganim_state       = "idle"
+        self._ganim_step        = 0
+        self._crouch_idx        = None
+        self._crouch_tgt        = None
+        self._lower_start       = None
+        self._state             = "WALKING"
+        self._state_step        = 0
+        self._cube_nav          = None   # 이동할 박스 XY
+        self._gripped           = False
+        self._detected_aruco_id = None   # 감지된 ArUco ID
+        self._goal_xy           = None   # ID에 대응하는 목표 XY
+        self._grip_box_path     = None   # 잡고 있는 AutoBox prim 경로
+        self._det_cnt           = 0
+        self._warmup_cnt        = 0
+        self._stab_cnt          = 0
+        self._initialized       = False
+        self._stable            = False
         ox, oy = spawn[0], spawn[1]
-        self._waypoints = [
-            np.array([ox + 3.0, oy + 0.0]),
-            np.array([ox + 3.0, oy - 1.5]),
-            np.array([ox + 0.0, oy - 1.5]),
-            np.array([ox + 0.0, oy + 0.0]),
-        ]
+        # robot_config.py 의 "waypoints" 키로 경로 지정 가능.
+        # 미지정 시 스폰 주변 기본 사각형 경로 사용.
+        if "waypoints" in self.cfg and self.cfg["waypoints"]:
+            self._waypoints = [np.array(wp, dtype=np.float64)
+                               for wp in self.cfg["waypoints"]]
+        else:
+            self._waypoints = [
+                np.array([ox + 3.0, oy + 0.0]),
+                np.array([ox + 3.0, oy - 1.5]),
+                np.array([ox + 0.0, oy - 1.5]),
+                np.array([ox + 0.0, oy + 0.0]),
+            ]
         self._wp_idx  = 0
         self._home_xy = np.array([ox, oy])
 
@@ -474,17 +474,7 @@ class SpotAgent(BaseRobotAgent):
     def _cur_g_off(self, v):
         self.__cur_g_off = v
 
-    # ── 큐브 제어 ────────────────────────────────────────────────────
-
-    def _set_cube_kinematic(self, enabled: bool):
-        self._cube_rb.GetRigidBodyEnabledAttr().Set(not enabled)
-
-    def _set_cube_pos(self, pos: np.ndarray):
-        self._cube_t_op.Set(Gf.Vec3d(*map(float, pos)))
-
-    def _get_cube_world(self) -> np.ndarray:
-        mat = self._cube_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        return np.array(mat.ExtractTranslation())
+    # ── AutoBox 제어 ─────────────────────────────────────────────────
 
     def _get_grip_center(self) -> np.ndarray:
         stage = self.world.stage
@@ -497,47 +487,129 @@ class SpotAgent(BaseRobotAgent):
                 pts.append(np.array(mat.ExtractTranslation()))
         return np.mean(pts, axis=0) if pts else self._g_world_pos.copy()
 
-    def _sync_cube_to_gripper(self):
-        if not self._gripped:
+    def _find_nearest_autobox(self, spot_xy: np.ndarray,
+                               max_dist: float = 6.0):
+        """스팟 XY 기준 가장 가까운 미픽업 AutoBox prim 경로와 XY를 반환."""
+        stage = omni.usd.get_context().get_stage()
+        best_path, best_xy, best_dist = None, None, max_dist
+        for prim in stage.Traverse():
+            path = str(prim.GetPath())
+            if not path.startswith("/World/AutoBox_"):
+                continue
+            if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                continue
+            # 이미 kinematic(다른 로봇이 잡은 것) 이면 스킵
+            if UsdPhysics.RigidBodyAPI(prim).GetKinematicEnabledAttr().Get():
+                continue
+            mat = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+            T   = np.array(mat, dtype=np.float64).T
+            xy  = T[:2, 3]
+            d   = float(np.linalg.norm(xy - spot_xy))
+            if d < best_dist:
+                best_dist, best_path, best_xy = d, path, xy.copy()
+        return best_path, best_xy
+
+    @staticmethod
+    def _set_box_collision(prim, enabled: bool) -> None:
+        """AutoBox 하위 전체 collision 활성/비활성."""
+        for child in Usd.PrimRange(prim):
+            if child.HasAPI(UsdPhysics.CollisionAPI):
+                child.GetAttribute("physics:collisionEnabled").Set(enabled)
+
+    def _attach_nearest_autobox(self):
+        """
+        스팟 현재 위치 기준 가장 가까운 AutoBox를 kinematic으로 전환.
+        collision 도 비활성화 → kinematic 박스가 Spot 충돌 메시를 관통할 때
+        물리 엔진이 가하는 충격력(Spot 날아가는 현상)을 방지.
+        """
+        try:
+            pos, _ = self._get_pos_yaw()
+            path, _ = self._find_nearest_autobox(pos[:2], max_dist=2.0)
+            if path is None:
+                print(f"[{self.name}] 근처 AutoBox 없음 (2m 내)")
+                return
+            stage = omni.usd.get_context().get_stage()
+            prim  = stage.GetPrimAtPath(path)
+            # kinematic 전환 + collision 비활성화
+            UsdPhysics.RigidBodyAPI(prim).GetKinematicEnabledAttr().Set(True)
+            self._set_box_collision(prim, False)
+            self._grip_box_path = path
+            print(f"[{self.name}] AutoBox 흡착 (collision OFF): {path}")
+        except Exception as e:
+            carb.log_warn(f"[{self.name}] attach 오류: {e}")
+
+    def _sync_autobox_to_gripper(self):
+        """잡은 AutoBox를 그리퍼 중심으로 이동."""
+        if not self._gripped or self._grip_box_path is None:
+            return
+        stage = omni.usd.get_context().get_stage()
+        prim  = stage.GetPrimAtPath(self._grip_box_path)
+        if not prim.IsValid():
+            self._grip_box_path = None
             return
         pos    = self._get_grip_center()
-        pos[2] = max(float(pos[2]), _CUBE_SCALE / 2)
-        self._set_cube_pos(pos)
+        pos[2] = max(float(pos[2]), 0.05)
+        xf = UsdGeom.Xformable(prim)
+        for op in xf.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                op.Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+                break
 
-    # ── 탐지 ─────────────────────────────────────────────────────────
+    def _detach_autobox(self):
+        """AutoBox physics 복원 + collision 재활성화 → 낙하."""
+        if self._grip_box_path is None:
+            return
+        stage = omni.usd.get_context().get_stage()
+        prim  = stage.GetPrimAtPath(self._grip_box_path)
+        if prim.IsValid() and prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            self._set_box_collision(prim, True)          # collision 복원
+            UsdPhysics.RigidBodyAPI(prim).GetKinematicEnabledAttr().Set(False)
+        print(f"[{self.name}] AutoBox 해제 (collision ON → 낙하): {self._grip_box_path}")
+        self._grip_box_path = None
 
-    def _detect_blue(self, frame: np.ndarray):
+    # ── ArUco 탐지 ────────────────────────────────────────────────────
+
+    def _detect_aruco(self, frame: np.ndarray):
+        """카메라 프레임에서 가장 큰 ArUco 마커 ID를 반환. 없으면 None."""
         if frame is None or frame.size == 0:
-            return False, 0.0, 0
+            return None
         bgr  = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        hsv  = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, _BLUE_LOWER, _BLUE_UPPER)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-        cs, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not cs:
-            return False, 0.0, 0
-        lg   = max(cs, key=cv2.contourArea)
-        area = int(cv2.contourArea(lg))
-        if area < _MIN_AREA:
-            return False, 0.0, area
-        M  = cv2.moments(lg)
-        cx = int(M["m10"] / M["m00"]) if M["m00"] > 0 else frame.shape[1] // 2
-        return True, (cx / frame.shape[1]) - 0.5, area
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        corners, ids, _ = self._aruco_detector.detectMarkers(gray)
+        if ids is None or len(ids) == 0:
+            return None
+        # 면적이 가장 큰 마커 선택
+        areas = [
+            float((corners[i][0].max(axis=0) - corners[i][0].min(axis=0)).prod())
+            for i in range(len(ids))
+        ]
+        best = int(np.argmax(areas))
+        aruco_id = int(ids[best][0])
+        if aruco_id in self._aruco_goals and areas[best] > _MIN_AREA:
+            return aruco_id
+        return None
 
-    def _try_detect(self):
+    def _try_detect_aruco(self):
+        """WALKING 중 ArUco 탐지 → 박스 위치 확인 후 NAVIGATE_TO_CUBE 전환."""
         if self._wrist_cam is None:
             return
         try:
             rgb = self._wrist_cam.get_rgb()
-            if rgb is None or rgb.size == 0:
+            aruco_id = self._detect_aruco(rgb)
+            if aruco_id is None:
                 return
-            found, cx_r, area = self._detect_blue(rgb)
-            if found and abs(cx_r) < _CENTER_TOL:
-                cw = self._get_cube_world()
-                self._cube_nav  = cw[:2].copy()
-                self._state     = "NAVIGATE_TO_CUBE"
-                self._state_step = 0
-                print(f"[{self.name}] 큐브 발견 {cw.round(3)}  area={area}")
+            # 가장 가까운 AutoBox 위치 확인
+            pos, _ = self._get_pos_yaw()
+            _, box_xy = self._find_nearest_autobox(pos[:2])
+            if box_xy is None:
+                return
+            self._detected_aruco_id = aruco_id
+            self._goal_xy           = self._aruco_goals[aruco_id]
+            self._cube_nav          = box_xy
+            self._state             = "NAVIGATE_TO_CUBE"
+            self._state_step        = 0
+            print(f"[{self.name}] ArUco ID={aruco_id} 감지 "
+                  f"박스={box_xy.round(2)}  목표={self._goal_xy.round(2)}")
         except Exception as e:
             carb.log_warn(f"[{self.name}] detect 오류: {e}")
 
@@ -585,7 +657,7 @@ class SpotAgent(BaseRobotAgent):
             self._det_cnt += 1
             if self._det_cnt >= _DETECT_EVERY:
                 self._det_cnt = 0
-                self._try_detect()
+                self._try_detect_aruco()           # ArUco ID 탐지
 
         elif self._state == "NAVIGATE_TO_CUBE":
             if self._cube_nav is None:
@@ -612,40 +684,46 @@ class SpotAgent(BaseRobotAgent):
         elif self._state == "GRASP":
             if self._ganim_state == "idle":
                 self._gripped = True
-                self._set_cube_kinematic(True)
-                self._sync_cube_to_gripper()
+                self._attach_nearest_autobox()     # AutoBox 흡착
+                self._sync_autobox_to_gripper()
                 self._state      = "RAISE"
                 self._state_step = 0
                 print(f"[{self.name}] → RAISE")
 
         elif self._state == "RAISE":
-            self._sync_cube_to_gripper()
+            self._sync_autobox_to_gripper()
             if self._state_step >= _RAISE_STEPS:
                 self._lower_start = None
-                self._state      = "RETURN_HOME"
+                goal = self._goal_xy if self._goal_xy is not None else self._home_xy
+                self._state      = "NAVIGATE_TO_GOAL"
                 self._state_step = 0
-                print(f"[{self.name}] → RETURN_HOME")
+                print(f"[{self.name}] → NAVIGATE_TO_GOAL  목표={goal.round(2)}")
 
-        elif self._state == "RETURN_HOME":
-            cmd = self._nav_toward(self._home_xy)
-            self._sync_cube_to_gripper()
+        elif self._state == "NAVIGATE_TO_GOAL":
+            # ArUco ID 에 해당하는 목표로 이동, 없으면 홈으로
+            goal = self._goal_xy if self._goal_xy is not None else self._home_xy
+            cmd  = self._nav_toward(goal)
+            self._sync_autobox_to_gripper()
             try:
                 pos, _ = self._get_pos_yaw()
-                if np.linalg.norm(pos[:2] - self._home_xy) < _HOME_DIST:
+                if np.linalg.norm(pos[:2] - goal) < _HOME_DIST:
                     self._state      = "RELEASE"
                     self._state_step = 0
                     self._trigger_open()
-                    print(f"[{self.name}] → RELEASE")
+                    print(f"[{self.name}] → RELEASE  at {goal.round(2)}")
             except Exception:
                 pass
 
         elif self._state == "RELEASE":
-            self._sync_cube_to_gripper()
+            self._sync_autobox_to_gripper()
             if self._ganim_state == "idle":
-                self._gripped = False
-                self._set_cube_kinematic(False)
-                self._state      = "WALKING"
-                self._state_step = 0
-                print(f"[{self.name}] 배치 완료 → WALKING 복귀")
+                self._gripped           = False
+                self._detach_autobox()             # AutoBox 해제
+                self._detected_aruco_id = None
+                self._goal_xy           = None
+                self._cube_nav          = None
+                self._state             = "WALKING"
+                self._state_step        = 0
+                print(f"[{self.name}] 배치 완료 → WALKING")
 
         return cmd
