@@ -15,7 +15,7 @@ _DRONE = _BASE / "robots" / "drone"     # main_isaac/robots/drone/
 _IWHUB = _BASE / "robots" / "iw_hub"   # main_isaac/robots/iw_hub/
 
 # ── 경로 설정 ─────────────────────────────────────────────────────────
-WAREHOUSE_USD     = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/warehouse_v7_1.usda"
+WAREHOUSE_USD     = str(_BASE / "usd" / "warehouse_v7_1.usda")
 SPOT_SRC_DIR      = str(_SPOT  / "spot_test")
 M0609_SRC_DIR     = str(_M0609 / "m0609_aruco_detect")
 
@@ -79,7 +79,7 @@ USE_REALSENSE = True
 #  type    : "green_id0" | "red_id1" | "blue_id2"
 #  xyz     : 스폰 위치 (x, y, z) [m]  ← 이 값을 수정해 위치 조정
 #
-_ARUCO_USD_DIR = "/home/rokey/Rokey_isaac-sim/aruco_marker_box/usd"
+_ARUCO_USD_DIR = str(_BASE / "aruco_marker_box" / "usd")
 
 ARUCO_BOXES = [
     {
@@ -105,7 +105,7 @@ ARUCO_BOXES = [
 #  xyz  : 스폰 위치 (x, y, z) [m]  ← 이 값을 수정해 위치 조정
 #  yaw  : 회전각 deg (Z축 기준, 기본 0)
 #
-_POD_USD = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/pot_v1.usda"
+_POD_USD = str(_BASE / "usd" / "pot_v1.usda")
 
 POD_STACKS = [
     {"name": "PodStack_01", "usd": _POD_USD, "xyz": (-12.8, 9.0, 0.0), "yaw": 0.0},  # ★
