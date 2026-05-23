@@ -104,7 +104,7 @@ ARUCO_BOXES = [
 _POD_USD = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/pot_v1.usda"
 
 POD_STACKS = [
-    {"name": "PodStack_01", "usd": _POD_USD, "xyz": (-12.5, 9.0, 0.0), "yaw": 0.0},  # ★
+    {"name": "PodStack_01", "usd": _POD_USD, "xyz": (-12.8, 9.0, 0.0), "yaw": 0.0},  # ★
     {"name": "PodStack_02", "usd": _POD_USD, "xyz": (-8.2, 1.5, 0.0), "yaw": 0.0},  # ★
     {"name": "PodStack_03", "usd": _POD_USD, "xyz": (-9.7, -8.9, 0.0), "yaw": 0.0},  # ★
 ]
@@ -150,12 +150,15 @@ ROBOT_REGISTRY = [
     {
         "type"       : "m0609",
         "name"       : "M0609_A",
-        "spawn_xyz"  : (-12.7, 9.00, 0.93),   # staging_platform_north / post_nw 위
+        "spawn_xyz"  : (-12.07, 7.92, 0.93),  # conv_3way/comp_out_north/staging_platform_north/post_nw 위
         "spawn_yaw"  : -90.0,
-        "goal_xyz"   : (-12.7, 9.00, 1.1),
+        "goal_xyz"   : (-12.7, 9.00, 1.3),
         "scale"      : 2.0,
         "box_type"   : "blue_id2",
         "aruco_box_wh": (0.30, 0.30),           # zone2 박스 bw=0.3 bd=0.3
+        # "pad_reach"        : 0.144,  # ★ EE→흡착패드끝 거리(m)
+        # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
+        # "home_return_steps": 150,    # ★ 홈복귀 속도 (↓값=빠름, 기본 250=0.5초)
     },
 
     # ── M0609 #2 ────────────────────────────────────────────────────
@@ -164,10 +167,12 @@ ROBOT_REGISTRY = [
         "name"       : "M0609_B",
         "spawn_xyz"  : (-9.45, 0.79, 0.93),    # staging_platform_west / post_nw 위
         "spawn_yaw"  : 180.0,
-        "goal_xyz"   : (-8.2, 1.5, 1.1),
+        "goal_xyz"   : (-8.2, 1.4, 1.3),
         "scale"      : 2.0,
         "box_type"   : "red_id1",
         "aruco_box_wh": (0.25, 0.25),           # zone1 박스 bw=0.25 bd=0.25
+        # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
+
     },
 
     # ── M0609 #3 ────────────────────────────────────────────────────
@@ -176,10 +181,13 @@ ROBOT_REGISTRY = [
         "name"       : "M0609_C",
         "spawn_xyz"  : (-10.45, -7.80, 0.91),  # staging_platform_south / post_nw 위
         "spawn_yaw"  : 90.0,
-        "goal_xyz"   : (-9.7, -8.9, 1.1),
+        "goal_xyz"   : (-9.7, -8.9, 1.3),
         "scale"      : 2.0,
 
         "box_type"   : "green_id0",
-        "aruco_box_wh": (0.20, 0.15),           # zone0 박스 bw=0.2 bd=0.15
+        "aruco_box_wh": (0.20, 0.20),           # zone0 박스 bw=0.2 bd=0.15
+        "pad_reach" : 0.2,  # ★ EE→흡착패드끝 거리(m). 미지정 시 (stem+pad)×scale 자동계산
+        # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
+
     },
 ]
