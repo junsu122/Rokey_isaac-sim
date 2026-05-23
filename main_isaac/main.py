@@ -21,6 +21,7 @@ simulation_app = SimulationApp({
         "omni.isaac.core_nodes",
         "omni.graph.action",
         "isaacsim.robot_setup.assembler",
+        "isaacsim.robot.wheeled_robots",
     ],
 })
 
@@ -42,18 +43,20 @@ from world_setup import setup_warehouse
 from auto_spawn_panel import AutoSpawnPanel
 
 #########################################################로봇 추가 부분
-from robots.spot.spot_agent  import SpotAgent
-from robots.m0609.m0609_agent import M0609Agent
-from robots.drone.drone_agent import DroneAgent
+from robots.spot.spot_agent       import SpotAgent
+from robots.m0609.m0609_agent     import M0609Agent
+from robots.drone.drone_agent     import DroneAgent
+from robots.iw_hub.iw_hub_agent   import IwHubAgent
 #####################################################################
 
 # ── 새 로봇 타입을 추가하면 여기에 등록 ────────────────────────────────
 _AGENT_CLASSES = {
 
     ##############################바로 위에서 추가한 부분을 불러오고 이름을 지정합니다
-    "spot" : SpotAgent,
-    "m0609": M0609Agent,
-    "drone": DroneAgent,
+    "spot"  : SpotAgent,
+    "m0609" : M0609Agent,
+    "drone" : DroneAgent,
+    "iw_hub": IwHubAgent,
     ########################################################################
 }
 
@@ -90,7 +93,7 @@ print(f"\n[main] 총 {len(agents)}개 로봇 로드 완료\n")
 # ── 월드 리셋 ─────────────────────────────────────────────────────────
 my_world.reset()
 
-for _ in range(30):
+for _ in range(60):
     omni.kit.app.get_app().update()
 
 for agent in agents:

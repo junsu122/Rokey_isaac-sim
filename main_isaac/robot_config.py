@@ -12,9 +12,10 @@ _BASE  = Path(__file__).parent           # main_isaac/
 _SPOT  = _BASE / "robots" / "spot"      # main_isaac/robots/spot/
 _M0609 = _BASE / "robots" / "m0609"     # main_isaac/robots/m0609/
 _DRONE = _BASE / "robots" / "drone"     # main_isaac/robots/drone/
+_IWHUB = _BASE / "robots" / "iw_hub"   # main_isaac/robots/iw_hub/
 
 # ── 경로 설정 ─────────────────────────────────────────────────────────
-WAREHOUSE_USD     = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/warehouse_v7.usda"
+WAREHOUSE_USD     = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/warehouse_v7_1.usda"
 SPOT_SRC_DIR      = str(_SPOT  / "spot_test")
 M0609_SRC_DIR     = str(_M0609 / "m0609_aruco_detect")
 
@@ -24,6 +25,9 @@ PEGASUS_SIM_DIR   = str(_DRONE / "pegasus_simulator")
 
 # Spot용 그리퍼 USD (사전 컴파일된 USD 파일)
 SPOT_GRIPPER_USD  = str(_SPOT / "onrobot_rg2" / "urdf" / "onrobot_rg2" / "onrobot_rg2.usd")
+
+# IW Hub USD
+IW_HUB_USD        = str(_IWHUB / "iw_hub_v2.usda")
 
 # M0609 관련 경로 (M0609_SRC_DIR 기준)
 M0609_URDF        = M0609_SRC_DIR + "/doosan-robot2/urdf/m0609_isaac_sim.urdf"
@@ -43,7 +47,7 @@ USE_REALSENSE = True
 
 # ── 로봇 스폰 설정 ──────────────────────────────────────────────────
 #
-#  type        : "spot" | "m0609" | "drone"
+#  type        : "spot" | "m0609" | "drone" | "iw_hub"
 #  name        : 고유 이름 (USD prim path 에 사용됨)
 #  spawn_xyz   : (x, y, z)  단위 m  ← 이 값을 수정해 위치 조정
 #  spawn_yaw   : 초기 방향각 deg   (Z축 기준 반시계 +)
@@ -136,7 +140,7 @@ ROBOT_REGISTRY = [
         # ★ 좌표를 자유롭게 추가/수정/삭제 가능
         "waypoints": [
             ( 4.15, 7.0),   # wp0 ← ★
-            ( 1.15,  0.0),   # wp1 ← ★
+            ( 1.15, 7.0),   # wp1 ← ★
             ( 1.15, 13.0),   # wp2 ← ★
             ( 4.15, 13.0),   # wp3 ← ★
         ],
@@ -145,9 +149,9 @@ ROBOT_REGISTRY = [
         # ArUco ID 에 해당하는 박스를 집은 뒤 이 좌표로 이동해 내려놓습니다.
         # 키: ArUco ID (int), 값: (x, y) [m]  ← ★ 이 값을 수정해 목표 위치 조정
         "aruco_goals": {
-            0: ( 2.0,  3.0),   # green_id0 → 목표 A  ← ★
-            1: ( 2.0,  0.0),   # red_id1   → 목표 B  ← ★
-            2: ( 2.0, -3.0),   # blue_id2  → 목표 C  ← ★
+            0: ( -3.0,  15.15),   # green_id0 → 목표 A  ← ★
+            1: ( 0.0,  15.15),   # red_id1   → 목표 B  ← ★
+            2: ( 3.0, 15.15),   # blue_id2  → 목표 C  ← ★
         },
     },
 
@@ -155,15 +159,15 @@ ROBOT_REGISTRY = [
     {
         "type"      : "spot",
         "name"      : "Spot_02",
-        "spawn_xyz" : ( -4.1, -1.0, 0.7),
+        "spawn_xyz" : ( -4.1, 13.0, 0.7),
         "spawn_yaw" : 0.0,
         #
         # ── 순찰 웨이포인트 [(x, y), ...] [m] ───────────────────────
         # 이 순서대로 순환 주행합니다. 미지정 시 스폰 주변 기본 경로 사용.
         # ★ 좌표를 자유롭게 추가/수정/삭제 가능
         "waypoints": [
-            ( -4.1, -1.0),   # wp2 ← ★
-            ( -1.3, -1.0),   # wp3 ← ★
+            ( -4.1, 13.0),   # wp2 ← ★
+            ( -1.3, 13.0),   # wp3 ← ★
             ( -1.3,  7.0),   # wp0 ← ★
             ( -4.1,  7.0),   # wp1 ← ★
         ],
@@ -172,56 +176,75 @@ ROBOT_REGISTRY = [
         # ArUco ID 에 해당하는 박스를 집은 뒤 이 좌표로 이동해 내려놓습니다.
         # 키: ArUco ID (int), 값: (x, y) [m]  ← ★ 이 값을 수정해 목표 위치 조정
         "aruco_goals": {
-            0: ( 2.0,  3.0),   # green_id0 → 목표 A  ← ★
-            1: ( 2.0,  0.0),   # red_id1   → 목표 B  ← ★
-            2: ( 2.0, -3.0),   # blue_id2  → 목표 C  ← ★
+            0: ( -3.0,  15.15),   # green_id0 → 목표 A  ← ★
+            1: ( 0.0,  15.15),   # red_id1   → 목표 B  ← ★
+            2: ( 3.0, 15.15),   # blue_id2  → 목표 C  ← ★
         },
+    },
+
+    # ── IW Hub #1 ───────────────────────────────────────────────────
+    # 역할: 물품 이송 (이동은 ROS2 /cmd_vel 토픽으로 제어)
+    # 이름은 ROS2 토픽과 일치해야 한다: /iw_hub_01/cmd_vel, /iw_hub_01/odom
+    {
+        "type"      : "iw_hub",
+        "name"      : "iw_hub_01",
+        "spawn_xyz" : (0.0, -2.0, 0.0),   # ★ 스폰 위치
+        "spawn_yaw" : 0.0,
+    },
+
+    # ── IW Hub #2 ───────────────────────────────────────────────────
+    # 이름은 ROS2 토픽과 일치해야 한다: /iw_hub_02/cmd_vel, /iw_hub_02/odom
+    {
+        "type"      : "iw_hub",
+        "name"      : "iw_hub_02",
+        "spawn_xyz" : (0.0, 2.0, 0.0),   # ★ 스폰 위치
+        "spawn_yaw" : 0.0,
     },
 
     # ── M0609 #1 ────────────────────────────────────────────────────
     # 위치: 창고 서측 작업 스테이션 A
     # 역할: ArUco 마커 시각 서보 → 큐브 픽 앤 플레이스
-    # {
-    #     "type"       : "m0609",
-    #     "name"       : "M0609_A",
-    #     "spawn_xyz"  : (-12.07, 7.92, 0.93),  # conv_3way/comp_out_north/staging_platform_north/post_nw 위
-    #     "spawn_yaw"  : -90.0,
-    #     "goal_xyz"   : (-12.7, 9.00, 1.3),
-    #     "scale"      : 2.0,
-    #     "box_type"   : "blue_id2",
-    #     "aruco_box_wh": (0.30, 0.30),           # zone2 박스 bw=0.3 bd=0.3
-    #     # "pad_reach"        : 0.144,  # ★ EE→흡착패드끝 거리(m)
-    #     # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
-    #     # "home_return_steps": 150,    # ★ 홈복귀 속도 (↓값=빠름, 기본 250=0.5초)
-    # },
+    {
+        "type"       : "m0609",
+        "name"       : "M0609_A",
+        "spawn_xyz"  : (-12.07, 7.92, 0.93),  # conv_3way/comp_out_north/staging_platform_north/post_nw 위
+        "spawn_yaw"  : -90.0,
+        "goal_xyz"   : (-12.7, 9.00, 1.3),
+        "scale"      : 2.0,
+        "box_type"   : "blue_id2",
+        "aruco_box_wh": (0.30, 0.30),           # zone2 박스 bw=0.3 bd=0.3
+        # "pad_reach"        : 0.144,  # ★ EE→흡착패드끝 거리(m)
+        # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
+        # "home_return_steps": 150,    # ★ 홈복귀 속도 (↓값=빠름, 기본 250=0.5초)
+    },
 
-    # # ── M0609 #2 ────────────────────────────────────────────────────
-    # {
-    #     "type"       : "m0609",
-    #     "name"       : "M0609_B",
-    #     "spawn_xyz"  : (-9.45, 0.79, 0.93),    # staging_platform_west / post_nw 위
-    #     "spawn_yaw"  : 180.0,
-    #     "goal_xyz"   : (-8.2, 1.4, 1.3),
-    #     "scale"      : 2.0,
-    #     "box_type"   : "red_id1",
-    #     "aruco_box_wh": (0.25, 0.25),           # zone1 박스 bw=0.25 bd=0.25
-    #     # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
+    # ── M0609 #2 ────────────────────────────────────────────────────
+    {
+        "type"       : "m0609",
+        "name"       : "M0609_B",
+        "spawn_xyz"  : (-9.45, 0.79, 0.93),    # staging_platform_west / post_nw 위
+        "spawn_yaw"  : 180.0,
+        "goal_xyz"   : (-8.2, 1.4, 1.3),
+        "scale"      : 2.0,
+        "box_type"   : "red_id1",
+        "aruco_box_wh": (0.25, 0.25),           # zone1 박스 bw=0.25 bd=0.25
+        # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
 
-    # },
+    },
 
-    # # ── M0609 #3 ────────────────────────────────────────────────────
-    # {
-    #     "type"       : "m0609",
-    #     "name"       : "M0609_C",
-    #     "spawn_xyz"  : (-10.45, -7.80, 0.91),  # staging_platform_south / post_nw 위
-    #     "spawn_yaw"  : 90.0,
-    #     "goal_xyz"   : (-9.7, -8.9, 1.3),
-    #     "scale"      : 2.0,
+    # ── M0609 #3 ────────────────────────────────────────────────────
+    {
+        "type"       : "m0609",
+        "name"       : "M0609_C",
+        "spawn_xyz"  : (-10.45, -7.80, 0.91),  # staging_platform_south / post_nw 위
+        "spawn_yaw"  : 90.0,
+        "goal_xyz"   : (-9.7, -8.9, 1.3),
+        "scale"      : 2.0,
 
-    #     "box_type"   : "green_id0",
-    #     "aruco_box_wh": (0.20, 0.20),           # zone0 박스 bw=0.2 bd=0.15
-    #     "pad_reach" : 0.2,  # ★ EE→흡착패드끝 거리(m). 미지정 시 (stem+pad)×scale 자동계산
-    #     # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
+        "box_type"   : "green_id0",
+        "aruco_box_wh": (0.20, 0.20),           # zone0 박스 bw=0.2 bd=0.15
+        "pad_reach" : 0.2,  # ★ EE→흡착패드끝 거리(m). 미지정 시 (stem+pad)×scale 자동계산
+        # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
 
-    # },
+    },
 ]

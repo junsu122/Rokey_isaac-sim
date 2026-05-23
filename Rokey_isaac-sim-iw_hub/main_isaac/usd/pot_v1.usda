@@ -1,0 +1,141 @@
+#usda 1.0
+(
+    defaultPrim = "Pot"
+    upAxis = "Z"
+    metersPerUnit = 1
+)
+
+def Xform "Pot" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    float physics:mass = 15.0
+    bool physics:kinematicEnabled = 0
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    # ── 기둥 (Z=0 ~ 1.060m 연속) ──────────────────────────
+        def Cube "col_fr" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+        )
+        {
+            bool physics:kinematicEnabled = 1
+            color3f[] primvars:displayColor = [(0.3, 0.3, 0.3)]
+            double size = 1
+            float3 xformOp:scale = (0.04, 0.04, 1.06)
+            double3 xformOp:translate = (0.3905, 0.3905, 0.53)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "col_fl" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+        )
+        {
+            bool physics:kinematicEnabled = 1
+            color3f[] primvars:displayColor = [(0.3, 0.3, 0.3)]
+            double size = 1
+            float3 xformOp:scale = (0.04, 0.04, 1.06)
+            double3 xformOp:translate = (-0.3905, 0.3905, 0.53)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "col_rr" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+        )
+        {
+            bool physics:kinematicEnabled = 1
+            color3f[] primvars:displayColor = [(0.3, 0.3, 0.3)]
+            double size = 1
+            float3 xformOp:scale = (0.04, 0.04, 1.06)
+            double3 xformOp:translate = (0.3905, -0.3905, 0.53)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "col_rl" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+        )
+        {
+            bool physics:kinematicEnabled = 1
+            color3f[] primvars:displayColor = [(0.3, 0.3, 0.3)]
+            double size = 1
+            float3 xformOp:scale = (0.04, 0.04, 1.06)
+            double3 xformOp:translate = (-0.3905, -0.3905, 0.53)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+    # ── 플랫폼 ──────────────────────────────────────────────
+        def Cube "platform" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+        )
+        {
+            bool physics:kinematicEnabled = 1
+            color3f[] primvars:displayColor = [(0.85, 0.55, 0.1)]
+            double size = 1
+            float3 xformOp:scale = (0.821, 0.821, 0.02)
+            double3 xformOp:translate = (0.0, 0.0, 0.255)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+    # ── 벽 (기둥 중심선 배치, 기둥 안팎 각 10mm 돌출) ────────
+        def Cube "wall_n" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+        )
+        {
+            bool physics:kinematicEnabled = 1
+            color3f[] primvars:displayColor = [(0.85, 0.55, 0.1)]
+            double size = 1
+            float3 xformOp:scale = (0.741, 0.02, 0.795)
+            double3 xformOp:translate = (0, 0.3905, 0.6625)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "wall_s" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+        )
+        {
+            bool physics:kinematicEnabled = 1
+            color3f[] primvars:displayColor = [(0.85, 0.55, 0.1)]
+            double size = 1
+            float3 xformOp:scale = (0.741, 0.02, 0.795)
+            double3 xformOp:translate = (0, -0.3905, 0.6625)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "wall_e" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+        )
+        {
+            bool physics:kinematicEnabled = 1
+            color3f[] primvars:displayColor = [(0.85, 0.55, 0.1)]
+            double size = 1
+            float3 xformOp:scale = (0.02, 0.741, 0.795)
+            double3 xformOp:translate = (0.3905, 0, 0.6625)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "wall_w" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+        )
+        {
+            bool physics:kinematicEnabled = 1
+            color3f[] primvars:displayColor = [(0.85, 0.55, 0.1)]
+            double size = 1
+            float3 xformOp:scale = (0.02, 0.741, 0.795)
+            double3 xformOp:translate = (-0.3905, 0, 0.6625)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+    # ── 물리 머티리얼 ─────────────────────────────────────────
+        def Material "pot_mat"
+        {
+            def PhysicsMaterialAPI "pot_mat"
+            {
+                float physics:dynamicFriction  = 4.0
+                float physics:staticFriction   = 5.0
+                float physics:restitution      = 0.0
+                token physics:frictionCombineMode     = "max"
+                token physics:restitutionCombineMode  = "min"
+            }
+        }
+
+}

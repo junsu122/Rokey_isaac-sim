@@ -94,7 +94,8 @@ _CROUCH_DEG = {
     "hr_hx": -20.0,  "hr_hy":  63.11, "hr_kn": -86.11,
 }
 
-_MIN_AREA       = 300    # ArUco 마커 최소 픽셀 면적 (너무 작으면 무시)
+_MIN_AREA           = 300    # ArUco 마커 최소 픽셀 면적 (너무 작으면 무시)
+_GOAL_ZONE_HALF     = 1.5    # 목표 영역 반변 길이 (m) — 3×3 m 초록 사각형 기준
 _STOP_DIST      = 0.65
 _APPROACH_DIST  = 1.2
 _HOME_DIST      = 0.45
@@ -569,6 +570,14 @@ class SpotAgent(BaseRobotAgent):
 
     # ── ArUco 탐지 ────────────────────────────────────────────────────
 
+    def _is_in_goal_zone(self, xy: np.ndarray) -> bool:
+        """XY 위치가 aruco_goals 중 어느 목표 영역 안에 있는지 확인."""
+        for goal_xy in self._aruco_goals.values():
+            if (abs(xy[0] - goal_xy[0]) < _GOAL_ZONE_HALF and
+                    abs(xy[1] - goal_xy[1]) < _GOAL_ZONE_HALF):
+                return True
+        return False
+
     def _detect_aruco(self, frame: np.ndarray):
         """카메라 프레임에서 가장 큰 ArUco 마커 ID를 반환. 없으면 None."""
         if frame is None or frame.size == 0:
@@ -602,6 +611,11 @@ class SpotAgent(BaseRobotAgent):
             pos, _ = self._get_pos_yaw()
             _, box_xy = self._find_nearest_autobox(pos[:2])
             if box_xy is None:
+                return
+            # 박스가 이미 목표 영역 안에 있으면 스킵
+            if self._is_in_goal_zone(box_xy):
+                print(f"[{self.name}] ID={aruco_id} 박스가 이미 목표 영역 안 "
+                      f"{box_xy.round(2)} → 스킵")
                 return
             self._detected_aruco_id = aruco_id
             self._goal_xy           = self._aruco_goals[aruco_id]
