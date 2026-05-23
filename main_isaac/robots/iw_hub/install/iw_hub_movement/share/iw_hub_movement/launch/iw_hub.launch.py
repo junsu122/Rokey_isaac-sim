@@ -5,29 +5,20 @@ from launch_ros.actions import Node
 def generate_launch_description():
     return LaunchDescription([
 
-        # ── IW Hub #1 이동 노드 ─────────────────────────────────────────
+        # ── IW Hub #1 미션 시퀀스 (smart_factory 패키지) ────────────────
+        # STACK → 리프트 → UNLOAD → WAIT 전체 시퀀스 + 충돌 방지 내장
         Node(
-            package='iw_hub_movement',
-            executable='axis_nav',
-            name='axis_nav_01',
-            parameters=[{
-                'robot_name': 'iw_hub_01',
-                'waypoint':   'WAIT_1',    # ★ 시작 웨이포인트
-                'axis_order': 'xy',
-            }],
+            package='smart_factory',
+            executable='robot1_stack_sequence',
+            name='robot1_stack_sequence',
             output='screen',
         ),
 
-        # ── IW Hub #2 이동 노드 ─────────────────────────────────────────
+        # ── IW Hub #2 미션 시퀀스 (smart_factory 패키지) ────────────────
         Node(
-            package='iw_hub_movement',
-            executable='axis_nav',
-            name='axis_nav_02',
-            parameters=[{
-                'robot_name': 'iw_hub_02',
-                'waypoint':   'WAIT_2',    # ★ 시작 웨이포인트
-                'axis_order': 'xy',
-            }],
+            package='smart_factory',
+            executable='robot2_stack_sequence',
+            name='robot2_stack_sequence',
             output='screen',
         ),
 
