@@ -13,6 +13,7 @@ from smart_factory.axis_nav_to_place import (
     compute_axis_nav_command,
 )
 from smart_factory.models import Pose2D
+from smart_factory.no_go_zones import plan_axis_route_around_zones, route_crosses_no_go
 from smart_factory.pose_estimator import yaw_from_quaternion
 from smart_factory.robot_defaults import (
     default_base_frame,
@@ -917,6 +918,14 @@ def _build_route_for_sequence_target(
                 (target, "x"),
             ],
         )
+        if route_crosses_no_go(start, waypoints):
+            detour = plan_axis_route_around_zones(
+                start,
+                target,
+                axis_order=_axis_order_for_sequence_target(target_name, args),
+            )
+            if detour is not None:
+                waypoints, axes = detour
         return AxisRoute(target_name=target_name, waypoints=waypoints, axes=axes)
 
     return build_axis_route(

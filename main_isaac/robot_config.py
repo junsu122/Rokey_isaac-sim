@@ -113,6 +113,92 @@ POD_STACKS = [
     {"name": "PodStack_03", "usd": _POD_USD, "xyz": (-9.7, -8.9, 0.0), "yaw": 0.0},  # ★
 ]
 
+# ── IW Hub 이동 금지 구역 ─────────────────────────────────────────────
+#
+# 사각형 영역을 월드 XY 좌표로 등록하면 smart_factory 이동 경로가 이 공간을
+# clearance 만큼 더 넓게 잡고 우회합니다.
+#
+# 형식 1: min/max 직접 지정
+#   {"name": "pillar_01", "min_x": -2.0, "max_x": -1.2, "min_y": 3.0, "max_y": 4.0, "clearance": 0.5}
+#
+# 형식 2: 중심점 + 크기 지정
+#   {"name": "rail_01", "center": (0.0, 2.0), "size": (8.0, 0.4), "clearance": 0.5}
+#
+IW_HUB_NO_GO_ZONES = [
+    {
+        "name": "wall_n",
+        "center": (0.0, 16.65, 2.5),
+        "half_extent": (16.8, 0.15, 2.5),
+        "clearance": 0.5,
+    },
+    {
+        "name": "wall_s",
+        "center": (0.0, -16.65, 2.5),
+        "half_extent": (16.8, 0.15, 2.5),
+        "clearance": 0.5,
+    },
+    {
+        "name": "wall_w_n",
+        "center": (-16.65, 9.15, 2.5),
+        "half_extent": (0.15, 7.65, 2.5),
+        "clearance": 0.5,
+    },
+    {
+        "name": "wall_w_s",
+        "center": (-16.65, -9.15, 2.5),
+        "half_extent": (0.15, 7.65, 2.5),
+        "clearance": 0.5,
+    },
+    {
+        "name": "wall_e_seg0",
+        "center": (16.65, 14.35, 2.5),
+        "half_extent": (0.15, 2.45, 2.5),
+        "clearance": 0.5,
+    },
+    {
+        "name": "wall_e_seg1",
+        "center": (16.65, 5.2, 2.5),
+        "half_extent": (0.15, 3.7, 2.5),
+        "clearance": 0.5,
+    },
+    {
+        "name": "wall_e_seg2",
+        "center": (16.65, -5.2, 2.5),
+        "half_extent": (0.15, 3.7, 2.5),
+        "clearance": 0.5,
+    },
+    {
+        "name": "wall_e_seg3",
+        "center": (16.65, -14.35, 2.5),
+        "half_extent": (0.15, 2.45, 2.5),
+        "clearance": 0.5,
+    },
+    {
+        "name": "left_workcell_forbidden_zone",
+        "center": (-12.245, 0.08, 0.0),
+        "half_extent": (2.755, 7.79, 0.1),
+        "clearance": 0.5,
+    },
+    {
+        "name": "robot_cell_bottom",
+        "center": (-11.2, -8.5, 0.0),
+        "half_extent": (0.79, 0.79, 0.1),
+        "clearance": 0.2,
+    },
+    {
+        "name": "robot_cell_top",
+        "center": (-11.3, 8.66, 0.0),
+        "half_extent": (0.79, 0.79, 0.1),
+        "clearance": 0.2,
+    },
+    {
+        "name": "robot_cell_center",
+        "center": (-8.7, 0.0, 0.0),
+        "half_extent": (0.79, 0.79, 0.1),
+        "clearance": 0.2,
+    },
+]
+
 ROBOT_REGISTRY = [
 
     # ── Drone #1 ────────────────────────────────────────────────────

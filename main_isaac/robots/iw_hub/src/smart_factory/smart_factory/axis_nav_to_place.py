@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from smart_factory.models import Pose2D
+from smart_factory.no_go_zones import plan_axis_route_around_zones
 from smart_factory.pose_estimator import yaw_from_quaternion
 from smart_factory.robot_defaults import default_cmd_vel_topic, default_odom_topic
 from smart_factory.two_robot_reservation_follower import normalize_angle
@@ -84,6 +85,9 @@ def build_axis_route(
     else:
         steps = [((start[0], target[1]), "y"), (target, "x")]
     waypoints, axes = _deduplicate_steps(start, steps)
+    detour = plan_axis_route_around_zones(start, target, axis_order=axis_order)
+    if detour is not None:
+        waypoints, axes = detour
     return AxisRoute(target_name=resolved_target_name, waypoints=waypoints, axes=axes)
 
 

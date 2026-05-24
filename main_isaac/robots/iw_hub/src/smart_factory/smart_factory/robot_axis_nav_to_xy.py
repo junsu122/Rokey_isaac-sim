@@ -5,6 +5,7 @@ from typing import Optional
 
 from smart_factory.axis_nav_to_place import AxisRoute, compute_axis_nav_command
 from smart_factory.models import Pose2D
+from smart_factory.no_go_zones import plan_axis_route_around_zones
 from smart_factory.pose_estimator import yaw_from_quaternion
 from smart_factory.robot1_stack_sequence import (
     _build_left_bypass_route,
@@ -47,6 +48,9 @@ def build_xy_axis_route(
     else:
         raise ValueError("axis_order must be 'xy' or 'yx'")
     waypoints, axes = _deduplicate_route_steps(start, steps)
+    detour = plan_axis_route_around_zones(start, target, axis_order=axis_order)
+    if detour is not None:
+        waypoints, axes = detour
     return AxisRoute(target_name=f"XY({target[0]:.3f},{target[1]:.3f})", waypoints=waypoints, axes=axes)
 
 
