@@ -44,6 +44,51 @@ if C.USE_REALSENSE:
     from realsense_mount import attach_realsense_d455
     from wrist_camera import WristCamera
 
+try:
+    import sys as _sys
+    for _p in [
+        "/opt/ros/humble/local/lib/python3.10/dist-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+    ]:
+        if _p not in _sys.path:
+            _sys.path.insert(0, _p)
+    import rclpy
+    from std_msgs.msg import String as _RosString
+    _ROS2_AVAILABLE = True
+    print("[M0609] rclpy import 성공")
+except Exception as _e:
+    print(f"[M0609] rclpy import 실패: {_e}")
+    _ROS2_AVAILABLE = False
+
+_ros2_node = None
+_ros2_sub  = None
+_start_signal_count = 0   # A_start 수신 누적 횟수
+
+def _ros2_start_callback(msg):
+    global _start_signal_count
+    if msg.data == "A_start":
+        _start_signal_count += 1
+        print(f"[M0609] /m0609/work ← 'A_start' 수신  (재개 신호 #{_start_signal_count})")
+
+def _get_ros2_node():
+    """모듈 공유 ROS2 노드를 반환. 최초 1회만 init/create."""
+    global _ros2_node, _ros2_sub
+    if not _ROS2_AVAILABLE:
+        return None
+    try:
+        if not rclpy.ok():
+            rclpy.init()
+    except RuntimeError:
+        pass  # 이미 초기화됨 (Isaac Sim ROS bridge 등)
+    if _ros2_node is None:
+        _ros2_node = rclpy.create_node("isaac_m0609_node")
+        _ros2_sub  = _ros2_node.create_subscription(
+            _RosString, "/m0609/work", _ros2_start_callback, 10
+        )
+        print("[M0609] ROS2 노드 생성: isaac_m0609_node")
+        print("[M0609] ROS2 구독: /m0609/work  (A_start 수신 대기)")
+    return _ros2_node
+
 
 # ══════════════════════════════════════════════════════════════════════
 #  ★ 흡착 그리퍼 형상 파라미터 — 여기만 수정하세요 ★
@@ -126,8 +171,8 @@ _CAM_CX, _CAM_CY = _CAM_RES[0] / 2.0, _CAM_RES[1] / 2.0
 _DIST_COEFFS   = [0.0] * 12
 
 _HOME_JOINTS   = ["joint_1","joint_2","joint_3","joint_4","joint_5","joint_6"]
-_HOME_DEG      = np.array([90.0, 0.0, 70.0, 10.0, 100.0, 0.0])  # joint_4 -90° → EE 아래 향함
-_HOME_TOL_DEG  = 1.0
+_HOME_DEG      = np.array([110.0, 0.0, 70.0, 0.0, 100.0, 0.0])  # joint_4 -90° → EE 아래 향함
+_HOME_TOL_DEG  = 5.0
 _SERVO_PX2WLD  = np.array([[0.0, -1.0], [-1.0, 0.0]])
 
 _EE_INIT_H     = 0.25
@@ -145,8 +190,12 @@ _ARUCO_Z_OFF   = _CUBE_EDGE / 2.0 + 0.001  # 0.026 m
 
 # 새 pick 로직 파라미터
 _PICK_ABOVE_H  = 0.5    # [m] 마커 위 접근 높이               ← 수정 가능
-_APPROACH_TOL  = 0.08   # [m] RMPFlow 목표 도달 판정 거리    ← 수정 가능
+_APPROACH_TOL  = 0.15   # [m] RMPFlow 목표 도달 판정 거리    ← 수정 가능
 _MOVEL_STEPS   = 60     # MOVEL 보간 스텝 수                  ← 수정 가능
+
+# 시각 서보 하강 (SERVO_DESCEND) 파라미터 — multi_targets 모드 전용
+_SERVO_DZ      = 0.005  # [m/FSM tick] Z 하강 속도 (FSM 50Hz → 0.25 m/s)
+_SERVO_GAIN    = 0.0008 # [m/px] 픽셀 오차 → XY 보정 게인
 
 
 # box_type → ArUco ID 매핑
@@ -173,24 +222,42 @@ class M0609Agent(BaseRobotAgent):
         spawn    = self.spawn_xyz
         yaw_deg  = float(self.cfg.get("spawn_yaw", 0.0))
         scale    = float(self.cfg.get("scale", 1.0))
-        box_type = self.cfg.get("box_type", "red_id1")
-        goal_xyz = np.array(self.cfg["goal_xyz"])
+        box_type  = self.cfg.get("box_type", "red_id1")
+        multi_cfg = self.cfg.get("multi_targets", None)
 
-        self._aruco_id   = _ARUCO_ID_FROM_BOX.get(box_type, 1)
-        self._goal_pos   = goal_xyz
+        def _aruco_len_from_wh(wh):
+            if wh is not None:
+                return min(wh[0], wh[1]) * 0.9 * (600.0 / 720.0)
+            return _ARUCO_LEN
 
-        # ArUco marker_length = 박스 짧은 면 × 0.9 (plane 크기) × (600/720) (quiet zone 제외)
-        # aruco_box_wh 없으면 USDA 고정 박스(0.05m face) 기준 폴백
-        wh = self.cfg.get("aruco_box_wh", None)
-        if wh is not None:
-            self._aruco_len = min(wh[0], wh[1]) * 0.9 * (600.0 / 720.0)
-            # AutoSpawnPanel 박스: ArUco plane 이 박스 위 2mm 에 위치
-            # _aruco_to_world 가 반환하는 mw 는 plane 중심 → pick 은 plane 바로 아래(박스 윗면)
-            self._aruco_z_off = 0.002
+        if multi_cfg:
+            self._multi_targets = [
+                {
+                    "aruco_id" : _ARUCO_ID_FROM_BOX[t["box_type"]],
+                    "goal_pos" : np.array(t["goal_xyz"]),
+                    "aruco_len": _aruco_len_from_wh(t.get("aruco_box_wh")),
+                }
+                for t in multi_cfg
+            ]
+            self._id_to_goal  = {t["aruco_id"]: t["goal_pos"] for t in self._multi_targets}
+            self._aruco_id    = self._multi_targets[0]["aruco_id"]
+            self._goal_pos    = self._multi_targets[0]["goal_pos"]
+            self._aruco_len   = self._multi_targets[0]["aruco_len"]
+            self._aruco_z_off = 0.002  # AutoSpawnPanel 박스 공통
+            box_type          = multi_cfg[0]["box_type"]
         else:
-            self._aruco_len   = _ARUCO_LEN
-            # USDA 박스: marker 가 박스 표면에 직접 있음 → 절반 두께만큼 아래가 픽업 지점
-            self._aruco_z_off = _ARUCO_Z_OFF
+            self._multi_targets = None
+            self._id_to_goal    = None
+            self._aruco_id      = _ARUCO_ID_FROM_BOX.get(box_type, 1)
+            self._goal_pos      = np.array(self.cfg["goal_xyz"])
+            # ArUco marker_length = 박스 짧은 면 × 0.9 (plane 크기) × (600/720) (quiet zone 제외)
+            wh = self.cfg.get("aruco_box_wh", None)
+            if wh is not None:
+                self._aruco_len   = _aruco_len_from_wh(wh)
+                self._aruco_z_off = 0.002
+            else:
+                self._aruco_len   = _ARUCO_LEN
+                self._aruco_z_off = _ARUCO_Z_OFF
 
         # ScaleOp 이 물리에도 적용되어 팔 길이가 scale 배가 됨.
         # RMPFlow 는 1x URDF 로 IK 계산 → physics EE = 2*rmpflow_target - base.
@@ -206,11 +273,22 @@ class M0609Agent(BaseRobotAgent):
             "pad_reach",
             (_SUCTION_STEM_HEIGHT + _SUCTION_PAD_HEIGHT) * scale
         ))
-        # MOVEL 속도: 스텝 수 줄이면 빨라짐 (기본 60 → 30이면 2배 빠름)
-        # robot_config.py 의 "movel_steps" 키로 로봇별 조절 가능
-        self._movel_steps  = int(self.cfg.get("movel_steps", _MOVEL_STEPS))
-        # 홈 복귀 보간 스텝 수 (물리 500Hz 기준, 250→0.5초, 150→0.3초)
+        self._pick_offset  = np.array(
+            self.cfg.get("pick_xyz_offset", [0.0, 0.0, 0.0]), dtype=np.float64
+        )
+        wp = self.cfg.get("waypoint_xyz", None)
+        self._waypoint_xyz = np.array(wp, dtype=np.float64) if wp is not None else None
+        self._movel_steps       = int(self.cfg.get("movel_steps", _MOVEL_STEPS))
         self._home_return_steps = int(self.cfg.get("home_return_steps", 250))
+        self._approach_tol      = float(self.cfg.get("approach_tol", _APPROACH_TOL))
+        self._servo_dz          = float(self.cfg.get("servo_dz", _SERVO_DZ))
+        j1_lim = self.cfg.get("joint1_limits_deg", None)
+        if j1_lim:
+            self._j1_lo = np.deg2rad(j1_lim[0])
+            self._j1_hi = np.deg2rad(j1_lim[1])
+        else:
+            self._j1_lo = None
+            self._j1_hi = None
 
         stage = omni.usd.get_context().get_stage()
 
@@ -259,19 +337,27 @@ class M0609Agent(BaseRobotAgent):
             )
         )
 
+        # ── 받침대 큐브 (선택) ──────────────────────────────────────
+        pedestal = self.cfg.get("pedestal", None)
+        if pedestal:
+            self._build_pedestal(stage, spawn, pedestal)
+
         # ── 흡착 그리퍼 형상 (ScaleOp 로 자동 확대됨) ──────────────
         self._suction_path, cam_mount_path = self._build_suction_gripper(stage, robot_ee)
         self._grip_body_path = self._suction_path
         print(f"[{self.name}] 흡착 그리퍼 생성 완료: {self._suction_path}")
 
         # ── world_setup 에서 로드된 ArUco USDA 박스 참조 ───────────
-        box_prim_path = f"/World/ArUcoBoxes/{box_type}"
-        self._cube = self.world.scene.add(
-            SingleRigidPrim(
-                prim_path=box_prim_path,
-                name=f"{self.name}_cube",
+        if self._multi_targets:
+            self._cube = None  # 다중 타겟 모드: 진단 큐브 없음
+        else:
+            box_prim_path = f"/World/ArUcoBoxes/{box_type}"
+            self._cube = self.world.scene.add(
+                SingleRigidPrim(
+                    prim_path=box_prim_path,
+                    name=f"{self.name}_cube",
+                )
             )
-        )
 
         # 카메라 — USE_REALSENSE=True 일 때만 부착
         self._rs_path   = None
@@ -279,9 +365,24 @@ class M0609Agent(BaseRobotAgent):
         if C.USE_REALSENSE:
             self._setup_camera(stage, cam_mount_path)
 
+        self._pick_count = 0   # 누적 픽앤플레이스 횟수
+        self._work_complete_count = int(self.cfg.get("work_complete_count", 3))
+        self._pending_wait    = False  # 완료 publish 후 WAITING 전환 예약
+        self._wait_signal_count = 0   # WAITING 진입 시점의 _start_signal_count 값
+
+        # ROS2 publisher: /{robot_name}/work
+        self._ros2_pub = None
+        print(f"[{self.name}] ROS2 available={_ROS2_AVAILABLE}, multi={self._multi_targets}")
+        if _ROS2_AVAILABLE and not self._multi_targets:
+            node = _get_ros2_node()
+            if node is not None:
+                _topic = f"/{self.name[0].lower()}{self.name[1:]}/work"
+                self._ros2_pub = node.create_publisher(_RosString, _topic, 10)
+                print(f"[{self.name}] ROS2 publisher 생성: {_topic}  (완료 기준: {self._work_complete_count}회)")
+
         self._init_state(spawn)
         print(f"[{self.name}] setup 완료  spawn={spawn}  yaw={yaw_deg}°  "
-              f"box={box_prim_path}  goal={goal_xyz}")
+              f"goal={self._goal_pos}")
 
     # ── post_reset ───────────────────────────────────────────────────
     def post_reset(self) -> None:
@@ -312,11 +413,21 @@ class M0609Agent(BaseRobotAgent):
                       [0, _CAM_FY, _CAM_CY],
                       [0, 0, 1.0]], dtype=np.float64)
 
-        self._tracker = ArucoTracker(
-            marker_length=self._aruco_len, target_id=self._aruco_id, K=K)
+        if self._multi_targets:
+            self._trackers = {
+                t["aruco_id"]: ArucoTracker(
+                    marker_length=t["aruco_len"], target_id=t["aruco_id"], K=K
+                )
+                for t in self._multi_targets
+            }
+            self._tracker = next(iter(self._trackers.values()))
+        else:
+            self._trackers = None
+            self._tracker = ArucoTracker(
+                marker_length=self._aruco_len, target_id=self._aruco_id, K=K)
         self._servo = VisualServoController(
             image_size=_CAM_RES, pixel_to_world_xy=_SERVO_PX2WLD)
-        self._viewer = CameraViewer(enabled=True)
+        self._viewer = CameraViewer(enabled=False)  # 카메라 창 비활성화
 
         self._cspace = RMPFlowController(
             name=f"{self.name}_rmpflow",
@@ -339,11 +450,14 @@ class M0609Agent(BaseRobotAgent):
         )
 
         self._home_idx = self._find_joint_indices(self._robot, _HOME_JOINTS)
-        self._home_pos = np.deg2rad(_HOME_DEG)
+        home_deg = np.array(self.cfg.get("home_deg", _HOME_DEG), dtype=np.float64)
+        self._home_pos = np.deg2rad(home_deg)
+        if self._j1_lo is not None:
+            self._home_pos[0] = np.clip(self._home_pos[0], self._j1_lo, self._j1_hi)
         self._home_tol = np.deg2rad(_HOME_TOL_DEG)
 
         self._state = "MOVE_TO_HOME"
-        print(f"[{self.name}] post_reset 완료")
+        print(f"[{self.name}] post_reset 완료  home_deg={np.rad2deg(self._home_pos).round(1)}")
 
     # ── on_physics_step ──────────────────────────────────────────────
     def on_physics_step(self, _dt: float) -> None:
@@ -352,6 +466,9 @@ class M0609Agent(BaseRobotAgent):
         self._phys_cnt += 1
         if self._gripped:
             self._update_gripped_box()
+        # ROS2 노드 spin (500틱 = 1초마다, 첫 번째 로봇만 실행)
+        if _ROS2_AVAILABLE and _ros2_node is not None and self._phys_cnt % 500 == 0:
+            rclpy.spin_once(_ros2_node, timeout_sec=0)
         # 홈 복귀: 물리 500Hz 로 관절 보간 (FSM 주기와 별도)
         if self._state == "RETURN_TO_HOME":
             self._step_home_return()
@@ -438,6 +555,28 @@ class M0609Agent(BaseRobotAgent):
 
         return root_path, cam_mount_path
 
+    def _build_pedestal(self, stage, spawn_xyz, size) -> None:
+        """spawn_xyz 바로 아래에 고정 큐브 받침대를 생성."""
+        w, d, h = float(size[0]), float(size[1]), float(size[2])
+        cx = float(spawn_xyz[0])
+        cy = float(spawn_xyz[1])
+        cz = float(spawn_xyz[2]) - h / 2.0
+        prim_path = f"/World/pedestal_{self.name}"
+        cube = UsdGeom.Cube.Define(stage, prim_path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(cx, cy, cz))
+        xf.AddScaleOp().Set(Gf.Vec3f(w, d, h))
+        cube.GetPrim().CreateAttribute(
+            "primvars:displayColor", Sdf.ValueTypeNames.Color3fArray
+        ).Set([Gf.Vec3f(0.35, 0.35, 0.38)])
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        rb = UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        rb.GetKinematicEnabledAttr().Set(True)
+        print(f"[{self.name}] 받침대 생성: {prim_path}  "
+              f"center=({cx:.3f},{cy:.3f},{cz:.3f})  size={size}")
+
     def _disable_suction_physics(self) -> None:
         """흡착 그리퍼 prim 에 물리 API가 붙어있으면 모두 제거."""
         if not hasattr(self, "_suction_path") or self._suction_path is None:
@@ -474,6 +613,10 @@ class M0609Agent(BaseRobotAgent):
         self._home_ee_pos        = None   # MOVE_TO_HOME 완료 시 기록
         self._home_return_wps    = None   # 홈 복귀 관절 보간 웨이포인트
         self._home_return_step   = 0
+        self._active_aruco_id    = None
+        self._servo_target_xyz   = None  # SERVO_DESCEND 현재 목표 위치
+        self._detect_cooldown    = 0     # Detecting 진입 후 감지 대기 틱 수
+        self._approach_start_cnt = 0     # APPROACH_ABOVE 진입 시 phys_cnt
 
     def _setup_camera(self, stage, cam_parent_path: str):
         """RealSense D455 를 cam_parent_path prim 에 부착.
@@ -612,6 +755,15 @@ class M0609Agent(BaseRobotAgent):
             target_end_effector_position=t,
             target_end_effector_orientation=ori,
         )
+        if self._j1_lo is not None and actions.joint_positions is not None:
+            jp = np.array(actions.joint_positions, dtype=np.float64)
+            j1 = int(self._home_idx[0])
+            jp[j1] = np.clip(jp[j1], self._j1_lo, self._j1_hi)
+            actions = ArticulationAction(
+                joint_positions=jp,
+                joint_velocities=actions.joint_velocities,
+                joint_efforts=actions.joint_efforts,
+            )
         self._robot.apply_action(actions)
 
     def _step_home_return(self) -> None:
@@ -667,6 +819,46 @@ class M0609Agent(BaseRobotAgent):
                 best_path = path
         return best_path
 
+    def _find_box_by_aruco_id(self, aruco_id: int):
+        """ArUco ID에 해당하는 AutoBox 윗면(ArUco plane) 세계 좌표를 USD stage에서 직접 조회."""
+        target_tex = f"aruco_id{aruco_id}.png"
+        stage = omni.usd.get_context().get_stage()
+        best_pos = None
+        best_z   = -1e9
+
+        for prim in stage.Traverse():
+            path = str(prim.GetPath())
+            if not path.startswith("/World/AutoBox_"):
+                continue
+            if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                continue
+            tex_prim = stage.GetPrimAtPath(f"{path}/aruco_mat/Texture")
+            if not tex_prim.IsValid():
+                continue
+            attr = tex_prim.GetAttribute("inputs:file")
+            if not attr or target_tex not in str(attr.Get()):
+                continue
+            mat = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+            T   = np.array(mat, dtype=np.float64).T
+            pos = T[:3, 3]
+            # 박스 높이: /box 자식 prim 의 xformOp:scale Z
+            bh = 0.15
+            box_child = stage.GetPrimAtPath(f"{path}/box")
+            if box_child.IsValid():
+                xf = UsdGeom.Xformable(box_child)
+                for op in xf.GetOrderedXformOps():
+                    if op.GetOpType() == UsdGeom.XformOp.TypeScale:
+                        val = op.Get()
+                        if val is not None:
+                            bh = float(val[2])
+                        break
+            aruco_z = float(pos[2]) + bh / 2.0 + 0.002
+            if aruco_z > best_z:
+                best_z   = aruco_z
+                best_pos = np.array([float(pos[0]), float(pos[1]), aruco_z])
+
+        return best_pos
+
     def _attach_autobox(self, prim_path: str,
                         ideal_ee_pos: "np.ndarray | None" = None) -> bool:
         """
@@ -701,9 +893,7 @@ class M0609Agent(BaseRobotAgent):
         self._grab_offset_local = R_ee.T @ (box_pos - ee_ref)
         self._grab_R_rel        = R_ee.T @ R_box
         self._gripped           = True
-        print(f"[{self.name}] 흡착 완료: {prim_path}")
-        print(f"[{self.name}]   box_pos={np.round(box_pos,3)}  "
-              f"ee_ref={np.round(ee_ref,3)}  ee_actual={np.round(ee_pos,3)}")
+        print(f"[{self.name}] 흡착: {prim_path}")
         return True
 
     def _update_gripped_box(self):
@@ -760,13 +950,21 @@ class M0609Agent(BaseRobotAgent):
         self._gripped           = False
 
     def _display_label(self) -> str:
-        if self._state in ("DESCEND_TO_GRIP", "LIFT_AFTER_GRIP"):
-            return "Picking..."
-        if self._state in ("MOVE_TO_GOAL", "DESCEND_TO_PLACE", "RETRACT_PLACE"):
-            return "Placing..."
-        if self._gripped:
-            return "Carrying..."
-        return "Detecting..."
+        labels = {
+            "MOVE_TO_HOME"     : "Moving to Home",
+            "Detecting"        : "Detecting...",
+            "APPROACH_ABOVE"   : "Approaching Box",
+            "SERVO_DESCEND"    : "Servo Picking...",
+            "DESCEND_TO_GRIP"  : "Picking...",
+            "LIFT_AFTER_GRIP"  : "Lifting...",
+            "MOVE_TO_WAYPOINT" : "To Waypoint",
+            "MOVE_TO_GOAL"     : "Moving to Goal",
+            "DESCEND_TO_PLACE" : "Placing...",
+            "RETRACT_PLACE"    : "Retracting",
+            "RETURN_TO_HOME"   : "Returning Home",
+            "WAITING"          : "Waiting A_start",
+        }
+        return labels.get(self._state, self._state)
 
     def _reset_for_next_cycle(self):
         """배치 완료 후 팔 복귀 → 대기 사이클 시작."""
@@ -781,6 +979,9 @@ class M0609Agent(BaseRobotAgent):
         self._movel_wps          = None
         self._movel_step         = 0
         self._det                = None
+        self._active_aruco_id    = None
+        # 홈 복귀 후 감지 쿨다운 (방금 내려놓은 박스 즉시 재감지 방지)
+        self._detect_cooldown    = int(self.cfg.get("detect_cooldown_ticks", 100))
         # 현재 관절 → 홈 관절 선형 보간 (물리 500Hz 에서 실행)
         cur = self._robot.get_joint_positions()
         self._home_return_wps  = np.linspace(
@@ -800,10 +1001,19 @@ class M0609Agent(BaseRobotAgent):
         ee_pos, _ = robot.end_effector.get_world_pose()
 
         rgb = self._wrist_cam.get_rgb() if self._wrist_cam else None
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR) if rgb is not None else None
         det = None
-        if rgb is not None:
-            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            det = self._tracker.detect(bgr)
+        if bgr is not None:
+            if self._trackers:
+                for t_info in self._multi_targets:
+                    d = self._trackers[t_info["aruco_id"]].detect(bgr)
+                    if d is not None and d.found:
+                        det = d
+                        self._active_aruco_id = t_info["aruco_id"]
+                        self._tracker = self._trackers[self._active_aruco_id]
+                        break
+            else:
+                det = self._tracker.detect(bgr)
         self._det = det
 
         # ── MOVE_TO_HOME ─────────────────────────────────────────────
@@ -811,8 +1021,12 @@ class M0609Agent(BaseRobotAgent):
             robot.set_joint_positions(self._home_pos,
                                       joint_indices=self._home_idx)
             err = np.max(np.abs(joints[self._home_idx] - self._home_pos))
-            if err < self._home_tol:
-                self._home_ee_pos = ee_pos.copy()   # 홈 EE 위치 기록 (복귀 시 사용)
+            # 허용오차 이내 OR 5초(250 FSM 틱) 타임아웃 → Detecting 진입
+            timeout = self._phys_cnt > 250 * _FSM_EVERY
+            if err < self._home_tol or timeout:
+                if timeout and err >= self._home_tol:
+                    print(f"[{self.name}] MOVE_TO_HOME 타임아웃 (err={np.rad2deg(err):.1f}°) → Detecting")
+                self._home_ee_pos = ee_pos.copy()
                 self._state = "Detecting"
                 print(f"[{self.name}] → Detecting  home_ee={ee_pos.round(3)}")
 
@@ -823,33 +1037,48 @@ class M0609Agent(BaseRobotAgent):
             robot.set_joint_positions(self._home_pos,
                                       joint_indices=self._home_idx)
 
+            # ── 홈 복귀 후 쿨다운 (방금 내려놓은 박스 즉시 재감지 방지) ──
+            if self._detect_cooldown > 0:
+                self._detect_cooldown -= 1
+                return
+
             # ── 진단 로그: 50 FSM 틱마다 검출 현황 출력 ─────────────
             if self._phys_cnt % (50 * _FSM_EVERY) == 0:
-                if det is None:
+                if bgr is None:
                     print(f"[{self.name}][Detecting] 카메라 프레임 없음 (wrist_cam 미초기화?)")
-                elif not det.found and not det.all_detected_ids:
-                    print(f"[{self.name}][Detecting] 아무 ArUco도 검출 안됨 (마커가 시야 밖이거나 대비 부족)")
+                elif det is None:
+                    target_ids = ([t["aruco_id"] for t in self._multi_targets]
+                                  if self._multi_targets else [self._aruco_id])
+                    print(f"[{self.name}][Detecting] 목표 IDs={target_ids} 검출 안됨")
                 elif not det.found:
                     print(f"[{self.name}][Detecting] 검출된 IDs={det.all_detected_ids}, 목표 ID={self._aruco_id} 없음")
                 else:
-                    print(f"[{self.name}][Detecting] 목표 ID={self._aruco_id} 검출 중...")
+                    act_id = self._active_aruco_id if self._trackers else self._aruco_id
+                    print(f"[{self.name}][Detecting] 목표 ID={act_id} 검출 중...")
 
             if det is not None and det.found:
-                mw = self._aruco_to_world(det, self._wrist_cam._prim_path)
-                cube_pos, _ = self._cube.get_world_pose()
+                if self._id_to_goal is not None and self._active_aruco_id is not None:
+                    self._goal_pos = self._id_to_goal[self._active_aruco_id]
+                act_id = self._active_aruco_id if self._trackers else self._aruco_id
 
-                # ── 진단 로그: 검출 즉시 상세 정보 출력 ─────────────
-                print(f"\n{'='*60}")
-                print(f"[{self.name}][DIAG] ArUco 검출 성공!")
-                print(f"[{self.name}][DIAG] tvec(카메라기준,m) = {np.round(det.tvec, 4) if det.tvec is not None else 'None'}")
-                print(f"[{self.name}][DIAG] mw(aruco→world) = {np.round(mw, 4) if mw is not None else 'None'}")
-                print(f"[{self.name}][DIAG] cube.get_world_pose = {np.round(cube_pos, 4)}")
-                print(f"[{self.name}][DIAG] EE 현재 위치      = {np.round(ee_pos, 4)}")
-                print(f"[{self.name}][DIAG] aruco_z_off       = {self._aruco_z_off}")
+                # 1순위: USD stage에서 박스 위치 직접 조회 (multi_targets/AutoBox 전용)
+                mw = self._find_box_by_aruco_id(act_id) if (self._multi_targets and act_id is not None) else None
+                # fallback: _aruco_to_world (solvePnP 기반)
+                if mw is None:
+                    mw = self._aruco_to_world(det, self._wrist_cam._prim_path)
+                # pick_xyz_offset 보정 (robot_config.py 에서 조절)
                 if mw is not None:
-                    diff = mw - cube_pos
-                    print(f"[{self.name}][DIAG] mw - cube_pos     = {np.round(diff, 4)}  (이 값이 크면 aruco_to_world 오차)")
-                print(f"{'='*60}\n")
+                    mw = mw + self._pick_offset
+
+                # ── 진단 로그: 1초마다 1회 출력 (50Hz 스팸 방지) ─────
+                if self._phys_cnt % (50 * _FSM_EVERY) == 0:
+                    if mw is None:
+                        print(f"[{self.name}][DIAG] 검출 성공(ID={act_id}) but mw=None "
+                              f"(tvec={'ok' if det.tvec is not None else 'None'}) "
+                              f"— stage 탐색 실패, solvePnP도 실패")
+                    else:
+                        print(f"[{self.name}][DIAG] 검출 성공 ID={act_id} "
+                              f"mw={np.round(mw,3)}  goal={np.round(self._goal_pos,3)}")
 
                 if mw is not None:
                     # 박스 윗면 z (ArUco plane - z_off)
@@ -864,10 +1093,8 @@ class M0609Agent(BaseRobotAgent):
                                                      self._goal_pos[1],
                                                      self._goal_pos[2] + _PICK_ABOVE_H])
                     self._state = "APPROACH_ABOVE"
-                    print(f"[{self.name}] Detecting → APPROACH_ABOVE")
-                    print(f"[{self.name}]   box_top_z={box_top_z:.3f}  pad_reach={self._pad_reach:.3f}")
-                    print(f"[{self.name}]   pick_world_pos = {self._pick_world_pos.round(3)}")
-                    print(f"[{self.name}]   pick_above_xyz = {self._pick_above_xyz.round(3)}")
+                    self._approach_start_cnt = self._phys_cnt
+                    print(f"[{self.name}] Detecting → APPROACH_ABOVE  pick={self._pick_world_pos.round(3)}  above={self._pick_above_xyz.round(3)}")
 
         # ── RETURN_TO_HOME ───────────────────────────────────────────
         # 관절 보간은 on_physics_step 의 _step_home_return() 에서 500Hz 로 처리.
@@ -876,62 +1103,112 @@ class M0609Agent(BaseRobotAgent):
             err = np.max(np.abs(joints[self._home_idx] - self._home_pos))
             if err < self._home_tol:
                 self._home_return_wps = None
+                if self._pending_wait:
+                    self._wait_signal_count = _start_signal_count
+                    self._state = "WAITING"
+                    print(f"[{self.name}] 홈 복귀 완료 → WAITING  (/m0609/work 에서 'A_start' 대기)")
+                else:
+                    self._state = "Detecting"
+                    print(f"[{self.name}] 홈 복귀 완료 → Detecting")
+
+        # ── WAITING ──────────────────────────────────────────────────
+        # 완료 publish 후 A_start 신호 수신 대기
+        elif self._state == "WAITING":
+            if _start_signal_count > self._wait_signal_count:
+                self._pending_wait = False
                 self._state = "Detecting"
-                print(f"[{self.name}] 홈 복귀 완료 → Detecting")
+                print(f"[{self.name}] ★ 'A_start' 수신 → Detecting 재개")
 
         # ── APPROACH_ABOVE ───────────────────────────────────────────
         # RMPFlow 로 픽업 위치 0.5 m 위까지 이동
         elif self._state == "APPROACH_ABOVE":
             self._apply_ee(self._pick_above_xyz)
             dist = np.linalg.norm(ee_pos - self._pick_above_xyz)
-            # 10 FSM 틱마다 EE 위치 vs 목표 출력
-            if self._phys_cnt % (10 * _FSM_EVERY) == 0:
-                rmpflow_t = self._base_pos + (self._pick_above_xyz - self._base_pos) / self._scale
-                print(f"[{self.name}][APPROACH] EE={np.round(ee_pos,3)}  "
-                      f"target={np.round(self._pick_above_xyz,3)}  "
-                      f"rmpflow_sends={np.round(rmpflow_t,3)}  dist={dist:.3f}m")
-            if dist < _APPROACH_TOL:
-                print(f"[{self.name}][APPROACH] 도달!  EE={np.round(ee_pos,3)}  target={np.round(self._pick_above_xyz,3)}")
-                self._start_movel(ee_pos, self._pick_world_pos)
-                self._state = "DESCEND_TO_GRIP"
-                print(f"[{self.name}] APPROACH_ABOVE 도달 → DESCEND_TO_GRIP")
+            elapsed = self._phys_cnt - self._approach_start_cnt
+            # 50 FSM 틱마다 EE 위치 vs 목표 출력
+            if self._phys_cnt % (50 * _FSM_EVERY) == 0:
+                print(f"[{self.name}][APPROACH] dist={dist:.3f}m  EE={np.round(ee_pos,3)}")
+            # 10초 (500 FSM 틱) 타임아웃 → 홈 복귀
+            if elapsed > 500 * _FSM_EVERY:
+                print(f"[{self.name}][APPROACH] 타임아웃 (dist={dist:.3f}m) → RETURN_TO_HOME")
+                self._reset_for_next_cycle()
+                return
+            if dist < self._approach_tol:
+                # 박스 위 도달 시점 EE 방향 기록 → 하강/이후 상태에서 유지
+                _, self._pick_ori_q = robot.end_effector.get_world_pose()
+                if self._multi_targets:
+                    self._servo_target_xyz = ee_pos.copy()
+                    self._state = "SERVO_DESCEND"
+                    print(f"[{self.name}] APPROACH_ABOVE → SERVO_DESCEND  EE={np.round(ee_pos,3)}")
+                else:
+                    self._start_movel(ee_pos, self._pick_world_pos)
+                    self._state = "DESCEND_TO_GRIP"
+                    print(f"[{self.name}] APPROACH_ABOVE → DESCEND_TO_GRIP  EE={np.round(ee_pos,3)}")
+
+        # ── SERVO_DESCEND ─────────────────────────────────────────────
+        # multi_targets 전용: ArUco 중심 추적하며 Z 하강
+        elif self._state == "SERVO_DESCEND":
+            if det is not None and det.found:
+                px_err = np.array([det.cx - _CAM_CX, det.cy - _CAM_CY])
+                xy_corr = _SERVO_PX2WLD @ px_err * _SERVO_GAIN
+                self._servo_target_xyz[0] += xy_corr[0]
+                self._servo_target_xyz[1] += xy_corr[1]
+            self._servo_target_xyz[2] -= self._servo_dz
+            self._apply_ee(self._servo_target_xyz, ori=self._pick_ori_q)
+            if self._phys_cnt % (50 * _FSM_EVERY) == 0:
+                print(f"[{self.name}][SERVO_DESCEND] z={self._servo_target_xyz[2]:.3f}"
+                      f"  det={'O' if det and det.found else 'X'}")
+            if self._servo_target_xyz[2] <= self._pick_world_pos[2]:
+                box_path = self._find_nearest_autobox(self._pick_world_pos, max_dist=1.5)
+                if box_path:
+                    self._attach_autobox(box_path, ideal_ee_pos=self._pick_world_pos)
+                    print(f"[{self.name}] SERVO_DESCEND → LIFT_AFTER_GRIP  (흡착 성공)")
+                else:
+                    print(f"[{self.name}] SERVO_DESCEND → LIFT_AFTER_GRIP  (흡착 실패: AutoBox 없음)")
+                self._start_movel(ee_pos, self._pick_above_xyz)
+                self._state = "LIFT_AFTER_GRIP"
 
         # ── DESCEND_TO_GRIP ──────────────────────────────────────────
         # 픽업 위치까지 직선 하강 (MOVEL)
         elif self._state == "DESCEND_TO_GRIP":
-            done = self._step_movel()
+            done = self._step_movel(ori=self._pick_ori_q)   # 하강 중 EE 방향 유지
             if done:
-                # 그립 시점의 EE 방향 기록 → 이후 운동에서 이 방향을 유지
-                _, self._pick_ori_q = robot.end_effector.get_world_pose()
-                dist = float(np.linalg.norm(ee_pos - self._pick_world_pos))
-                print(f"[{self.name}][DESCEND] 완료  EE={np.round(ee_pos,3)}  "
-                      f"pick_target={np.round(self._pick_world_pos,3)}  dist={dist:.3f}m")
-                # pick_world_pos XY 기준으로 근처 AutoBox 탐색 후 흡착
                 box_path = self._find_nearest_autobox(self._pick_world_pos, max_dist=1.5)
                 if box_path:
                     self._attach_autobox(box_path, ideal_ee_pos=self._pick_world_pos)
+                    print(f"[{self.name}] DESCEND_TO_GRIP → LIFT_AFTER_GRIP  (흡착 성공)")
                 else:
-                    print(f"[{self.name}] 흡착 실패: 근처에 AutoBox 없음 "
-                          f"(pick_pos={np.round(self._pick_world_pos,3)})")
-                # 성공/실패 무관하게 위로 올라감 (그립 방향 유지)
+                    print(f"[{self.name}] DESCEND_TO_GRIP → LIFT_AFTER_GRIP  (흡착 실패: AutoBox 없음  pos={np.round(self._pick_world_pos,3)})")
                 self._start_movel(ee_pos, self._pick_above_xyz)
                 self._state = "LIFT_AFTER_GRIP"
-                print(f"[{self.name}] DESCEND_TO_GRIP 완료 → LIFT_AFTER_GRIP")
 
         # ── LIFT_AFTER_GRIP ──────────────────────────────────────────
         # 픽업 후 위로 올라가기 — 그립 방향 유지
         elif self._state == "LIFT_AFTER_GRIP":
             done = self._step_movel(ori=self._pick_ori_q)
             if done:
+                if self._waypoint_xyz is not None:
+                    self._state = "MOVE_TO_WAYPOINT"
+                    print(f"[{self.name}] LIFT 완료 → MOVE_TO_WAYPOINT  wp={self._waypoint_xyz.round(3)}")
+                else:
+                    self._state = "MOVE_TO_GOAL"
+                    print(f"[{self.name}] LIFT 완료 → MOVE_TO_GOAL  goal_above={self._goal_above_xyz.round(3)}")
+
+        # ── MOVE_TO_WAYPOINT ─────────────────────────────────────────
+        # waypoint_xyz 경유 후 MOVE_TO_GOAL — 그립 방향 유지
+        elif self._state == "MOVE_TO_WAYPOINT":
+            self._apply_ee(self._waypoint_xyz, ori=self._pick_ori_q)
+            dist = np.linalg.norm(ee_pos - self._waypoint_xyz)
+            if dist < self._approach_tol:
                 self._state = "MOVE_TO_GOAL"
-                print(f"[{self.name}] LIFT 완료 → MOVE_TO_GOAL  goal_above={self._goal_above_xyz.round(3)}")
+                print(f"[{self.name}] 웨이포인트 도달 → MOVE_TO_GOAL  goal_above={self._goal_above_xyz.round(3)}")
 
         # ── MOVE_TO_GOAL ─────────────────────────────────────────────
         # RMPFlow 로 목표 위치 위까지 이동 — 그립 방향 유지
         elif self._state == "MOVE_TO_GOAL":
             self._apply_ee(self._goal_above_xyz, ori=self._pick_ori_q)
             dist = np.linalg.norm(ee_pos - self._goal_above_xyz)
-            if dist < _APPROACH_TOL:
+            if dist < self._approach_tol:
                 goal_xyz = np.array(self._goal_pos, dtype=np.float64)
                 self._start_movel(ee_pos, goal_xyz)
                 self._state = "DESCEND_TO_PLACE"
@@ -952,7 +1229,16 @@ class M0609Agent(BaseRobotAgent):
         elif self._state == "RETRACT_PLACE":
             done = self._step_movel()           # ori 없음: 홈 복귀에 자연스러운 경로
             if done:
-                print(f"[{self.name}] 배치 완료 → RETURN_TO_HOME")
+                self._pick_count += 1
+                print(f"[{self.name}] ★ 픽앤플레이스 완료 #{self._pick_count} → RETURN_TO_HOME")
+                if self._pick_count >= self._work_complete_count and self._ros2_pub is not None:
+                    suffix = self.name.split("_")[-1]   # "A" / "B" / "C"
+                    _msg = _RosString()
+                    _msg.data = f"{suffix}_complete"
+                    self._ros2_pub.publish(_msg)
+                    print(f"[{self.name}] ★ ROS2 publish → '{_msg.data}'")
+                    self._pick_count = 0
+                    self._pending_wait = True  # 홈 복귀 후 WAITING 진입 예약
                 self._reset_for_next_cycle()
 
 

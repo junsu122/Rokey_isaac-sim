@@ -12,6 +12,20 @@ main_isaac/main.py
     1. robot_config.py 의 ROBOT_REGISTRY 에 항목 추가
     2. 새 로봇 타입이면 robots/ 에 에이전트 클래스 작성 후 _AGENT_CLASSES 에 등록
 """
+import os, sys
+
+# Isaac Sim 내장 ROS2 (Python 3.11용) 경로 설정.
+# LD_LIBRARY_PATH는 프로세스 시작 전에만 적용되므로,
+# 미설정 시 환경변수를 추가하고 자신을 재실행한다.
+_BRIDGE = "/home/rokey/dev_ws/isaac_sim/isaacsim/_build/linux-x86_64/release/exts/isaacsim.ros2.bridge/humble"
+if os.path.isdir(_BRIDGE) and _BRIDGE + "/lib" not in os.environ.get("LD_LIBRARY_PATH", ""):
+    _env = os.environ.copy()
+    _env["LD_LIBRARY_PATH"] = _BRIDGE + "/lib:" + _env.get("LD_LIBRARY_PATH", "")
+    _env["PYTHONPATH"]      = _BRIDGE + "/rclpy:" + _env.get("PYTHONPATH", "")
+    _env["ROS_DISTRO"]      = "humble"
+    _env["RMW_IMPLEMENTATION"] = "rmw_fastrtps_cpp"
+    os.execve(sys.executable, [sys.executable] + sys.argv, _env)
+
 from isaacsim import SimulationApp
 
 simulation_app = SimulationApp({

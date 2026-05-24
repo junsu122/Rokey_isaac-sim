@@ -383,8 +383,8 @@ class AutoSpawnPanel:
                 bw = max(self._fw.model.get_value_as_float(), 0.01)
                 bd = max(self._fd.model.get_value_as_float(), 0.01)
                 bh = max(self._fh.model.get_value_as_float(), 0.01)
-            # zone 인덱스 = ArUco ID (zone0→id0, zone1→id1, zone2→id2, …)
-            aruco_id = zi % (_ARUCO_ID_MAX + 1)
+            # zone 인덱스 → ArUco ID: 3개 ID 순환 (zone3→id0, zone4→id1, zone5→id2)
+            aruco_id = zi % 3
             for _ in range(count):
                 r     = random.uniform(0.0, radius)
                 theta = random.uniform(0.0, 2 * math.pi)

@@ -120,6 +120,11 @@ class ArucoTracker:
                 self._obj_points, corner, self.K, self.dist,
                 flags=cv2.SOLVEPNP_IPPE_SQUARE,
             )
+            if not ok:
+                ok, rvec_out, tvec_out = cv2.solvePnP(
+                    self._obj_points, corner, self.K, self.dist,
+                    flags=cv2.SOLVEPNP_ITERATIVE,
+                )
             if ok:
                 rvec = rvec_out.flatten().astype(np.float64)
                 tvec = tvec_out.flatten().astype(np.float64)
