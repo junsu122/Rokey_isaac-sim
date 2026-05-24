@@ -61,18 +61,10 @@ except Exception as _e:
     _ROS2_AVAILABLE = False
 
 _ros2_node = None
-_ros2_sub  = None
-_start_signal_count = 0   # A_start 수신 누적 횟수
-
-def _ros2_start_callback(msg):
-    global _start_signal_count
-    if msg.data == "A_start":
-        _start_signal_count += 1
-        print(f"[M0609] /m0609/work ← 'A_start' 수신  (재개 신호 #{_start_signal_count})")
 
 def _get_ros2_node():
     """모듈 공유 ROS2 노드를 반환. 최초 1회만 init/create."""
-    global _ros2_node, _ros2_sub
+    global _ros2_node
     if not _ROS2_AVAILABLE:
         return None
     try:
@@ -82,11 +74,7 @@ def _get_ros2_node():
         pass  # 이미 초기화됨 (Isaac Sim ROS bridge 등)
     if _ros2_node is None:
         _ros2_node = rclpy.create_node("isaac_m0609_node")
-        _ros2_sub  = _ros2_node.create_subscription(
-            _RosString, "/m0609/work", _ros2_start_callback, 10
-        )
         print("[M0609] ROS2 노드 생성: isaac_m0609_node")
-        print("[M0609] ROS2 구독: /m0609/work  (A_start 수신 대기)")
     return _ros2_node
 
 
@@ -367,18 +355,31 @@ class M0609Agent(BaseRobotAgent):
 
         self._pick_count = 0   # 누적 픽앤플레이스 횟수
         self._work_complete_count = int(self.cfg.get("work_complete_count", 3))
-        self._pending_wait    = False  # 완료 publish 후 WAITING 전환 예약
-        self._wait_signal_count = 0   # WAITING 진입 시점의 _start_signal_count 값
+        self._pending_wait      = False  # 완료 publish 후 WAITING 전환 예약
+        self._start_signal_count = 0    # X_start 수신 누적 횟수 (로봇별)
+        self._wait_signal_count  = 0    # WAITING 진입 시점의 _start_signal_count 값
 
-        # ROS2 publisher: /{robot_name}/work
+        # ROS2 publisher + subscriber: /{robot_name}/work
         self._ros2_pub = None
         print(f"[{self.name}] ROS2 available={_ROS2_AVAILABLE}, multi={self._multi_targets}")
         if _ROS2_AVAILABLE and not self._multi_targets:
             node = _get_ros2_node()
             if node is not None:
-                _topic = f"/{self.name[0].lower()}{self.name[1:]}/work"
+                _topic  = f"/{self.name[0].lower()}{self.name[1:]}/work"
+                _suffix = self.name.split("_")[-1]   # "A" / "B" / "C"
+                _expect = f"{_suffix}_start"
+
                 self._ros2_pub = node.create_publisher(_RosString, _topic, 10)
-                print(f"[{self.name}] ROS2 publisher 생성: {_topic}  (완료 기준: {self._work_complete_count}회)")
+
+                def _make_cb(robot, expect):
+                    def _cb(msg):
+                        if msg.data == expect:
+                            robot._start_signal_count += 1
+                            print(f"[{robot.name}] {_topic} ← '{msg.data}' 수신  (재개 #{robot._start_signal_count})")
+                    return _cb
+
+                node.create_subscription(_RosString, _topic, _make_cb(self, _expect), 10)
+                print(f"[{self.name}] ROS2 publisher+subscriber: {_topic}  (완료:{self._work_complete_count}회 / 재개:'{_expect}')")
 
         self._init_state(spawn)
         print(f"[{self.name}] setup 완료  spawn={spawn}  yaw={yaw_deg}°  "
@@ -1104,20 +1105,22 @@ class M0609Agent(BaseRobotAgent):
             if err < self._home_tol:
                 self._home_return_wps = None
                 if self._pending_wait:
-                    self._wait_signal_count = _start_signal_count
+                    self._wait_signal_count = self._start_signal_count
                     self._state = "WAITING"
-                    print(f"[{self.name}] 홈 복귀 완료 → WAITING  (/m0609/work 에서 'A_start' 대기)")
+                    _suffix = self.name.split("_")[-1]
+                    print(f"[{self.name}] 홈 복귀 완료 → WAITING  (/{self.name[0].lower()}{self.name[1:]}/work 에서 '{_suffix}_start' 대기)")
                 else:
                     self._state = "Detecting"
                     print(f"[{self.name}] 홈 복귀 완료 → Detecting")
 
         # ── WAITING ──────────────────────────────────────────────────
-        # 완료 publish 후 A_start 신호 수신 대기
+        # 완료 publish 후 X_start 신호 수신 대기
         elif self._state == "WAITING":
-            if _start_signal_count > self._wait_signal_count:
+            if self._start_signal_count > self._wait_signal_count:
                 self._pending_wait = False
                 self._state = "Detecting"
-                print(f"[{self.name}] ★ 'A_start' 수신 → Detecting 재개")
+                _suffix = self.name.split("_")[-1]
+                print(f"[{self.name}] ★ '{_suffix}_start' 수신 → Detecting 재개")
 
         # ── APPROACH_ABOVE ───────────────────────────────────────────
         # RMPFlow 로 픽업 위치 0.5 m 위까지 이동

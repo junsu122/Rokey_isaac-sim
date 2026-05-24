@@ -215,7 +215,7 @@ ROBOT_REGISTRY = [
         "aruco_box_wh": (0.30, 0.30),           # zone2 박스 bw=0.3 bd=0.3
         "waypoint_xyz"      : (-11.3, 8.7, 1.5),
         "pick_z_offset"     : -0.1,   # ★ 픽 Z 추가 오프셋 (음수=더 아래, m)
-        "work_complete_count": 3,     # ★ 이 횟수만큼 픽앤플레이스 후 complete publish → WAITING
+        "work_complete_count": 1,     # ★ 이 횟수만큼 픽앤플레이스 후 complete publish → WAITING
         # "pad_reach"        : 0.144,  # ★ EE→흡착패드끝 거리(m)
         # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
         # "home_return_steps": 150,    # ★ 홈복귀 속도 (↓값=빠름, 기본 250=0.5초)
@@ -233,7 +233,7 @@ ROBOT_REGISTRY = [
         "aruco_box_wh": (0.25, 0.25),           # zone1 박스 bw=0.25 bd=0.25
         "waypoint_xyz"      : (-8.7, 0.0, 1.5),
         "pick_z_offset"     : -0.1,   # ★ 픽 Z 추가 오프셋 (음수=더 아래, m)
-        "work_complete_count": 3,     # ★ 이 횟수만큼 픽앤플레이스 후 complete publish → WAITING
+        "work_complete_count": 1,     # ★ 이 횟수만큼 픽앤플레이스 후 complete publish → WAITING
         # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
     },
 
@@ -250,7 +250,7 @@ ROBOT_REGISTRY = [
         "waypoint_xyz"      : (-11.3, -8.7, 1.5),
         "pad_reach"         : 0.2,    # ★ EE→흡착패드끝 거리(m). 미지정 시 (stem+pad)×scale 자동계산
         "pick_z_offset"     : -0.1,   # ★ 픽 Z 추가 오프셋 (음수=더 아래, m)
-        "work_complete_count": 3,     # ★ 이 횟수만큼 픽앤플레이스 후 complete publish → WAITING
+        "work_complete_count": 1,     # ★ 이 횟수만큼 픽앤플레이스 후 complete publish → WAITING
         # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
     },
 
