@@ -3,6 +3,8 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch_ros.actions import Node
+from launch_ros.descriptions import ParameterFile
+from nav2_common.launch import RewrittenYaml
 
 
 _NAV2_LIFECYCLE_NODES = [
@@ -49,53 +51,68 @@ def _cmd_vel_relay(name: str, input_topic: str, output_topic: str) -> Node:
 
 
 def _navigation_stack(namespace: str, params_file: str) -> list[Node]:
+    configured_params = ParameterFile(
+        RewrittenYaml(
+            source_file=params_file,
+            root_key=namespace,
+            param_rewrites={},
+            convert_types=True,
+        ),
+        allow_substs=True,
+    )
     common = {
         "namespace": namespace,
         "output": "screen",
-        "parameters": [params_file],
+        "parameters": [configured_params],
     }
+    tf_remappings = [("tf", "/tf"), ("tf_static", "/tf_static")]
     return [
         Node(
             package="nav2_controller",
             executable="controller_server",
-            remappings=[("cmd_vel", "cmd_vel_nav")],
+            remappings=[("cmd_vel", "cmd_vel_nav"), *tf_remappings],
             **common,
         ),
         Node(
             package="nav2_smoother",
             executable="smoother_server",
             name="smoother_server",
+            remappings=tf_remappings,
             **common,
         ),
         Node(
             package="nav2_planner",
             executable="planner_server",
             name="planner_server",
+            remappings=tf_remappings,
             **common,
         ),
         Node(
             package="nav2_behaviors",
             executable="behavior_server",
             name="behavior_server",
+            remappings=tf_remappings,
             **common,
         ),
         Node(
             package="nav2_bt_navigator",
             executable="bt_navigator",
             name="bt_navigator",
+            remappings=tf_remappings,
             **common,
         ),
         Node(
             package="nav2_waypoint_follower",
             executable="waypoint_follower",
             name="waypoint_follower",
+            remappings=tf_remappings,
             **common,
         ),
         Node(
             package="nav2_velocity_smoother",
             executable="velocity_smoother",
             name="velocity_smoother",
-            remappings=[("cmd_vel", "cmd_vel_nav"), ("cmd_vel_smoothed", "cmd_vel")],
+            remappings=[("cmd_vel", "cmd_vel_nav"), ("cmd_vel_smoothed", "cmd_vel"), *tf_remappings],
             **common,
         ),
         Node(
@@ -121,8 +138,8 @@ def generate_launch_description():
     hub_2_params = os.path.join(config_dir, "nav2_iw_hub_02.yaml")
 
     actions = [
-        _static_tf("iw_hub_01_map_to_odom", -8.0, -14.0, 1.5708, "iw_hub_01/odom"),
-        _static_tf("iw_hub_02_map_to_odom", -10.0, -14.0, 1.5708, "iw_hub_02/odom"),
+        _static_tf("iw_hub_01_map_to_odom", 0.0, 0.0, 0.0, "iw_hub_01/odom"),
+        _static_tf("iw_hub_02_map_to_odom", 0.0, 0.0, 0.0, "iw_hub_02/odom"),
         Node(
             package="smart_factory",
             executable="odom_tf_broadcaster",

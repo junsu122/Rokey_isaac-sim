@@ -23,8 +23,8 @@ def _static_tf(name: str, x: float, y: float, yaw: float, child_frame: str) -> N
 
 def generate_launch_description():
     return LaunchDescription([
-        _static_tf("iw_hub_01_map_to_odom", -8.0, -14.0, 1.5708, "iw_hub_01/odom"),
-        _static_tf("iw_hub_02_map_to_odom", -10.0, -14.0, 1.5708, "iw_hub_02/odom"),
+        _static_tf("iw_hub_01_map_to_odom", 0.0, 0.0, 0.0, "iw_hub_01/odom"),
+        _static_tf("iw_hub_02_map_to_odom", 0.0, 0.0, 0.0, "iw_hub_02/odom"),
         Node(
             package="smart_factory",
             executable="odom_tf_broadcaster",

@@ -13,7 +13,7 @@ from smart_factory.axis_nav_to_place import (
     compute_axis_nav_command,
 )
 from smart_factory.models import Pose2D
-from smart_factory.no_go_zones import plan_axis_route_around_zones, route_crosses_no_go
+from smart_factory.no_go_zones import load_no_go_zones, plan_axis_route_around_zones, route_crosses_no_go
 from smart_factory.pose_estimator import yaw_from_quaternion
 from smart_factory.robot_defaults import (
     default_base_frame,
@@ -124,7 +124,9 @@ class Robot1StackSequence(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self.cmd_pub = self.create_publisher(Twist, args.cmd_vel_topic, 10)
+        self.cmd_pub = None
+        if args.motion_controller != "nav2":
+            self.cmd_pub = self.create_publisher(Twist, args.cmd_vel_topic, 10)
         self.lift_pub = self.create_publisher(JointState, args.lift_topic, 10)
         self.status_pub = self.create_publisher(String, args.status_topic, 10)
         self.reservation_pub = self.create_publisher(String, args.reservation_topic, 10)
@@ -177,6 +179,17 @@ class Robot1StackSequence(Node):
 
     def _on_odom(self, msg: Odometry) -> None:
         self.odom_pose = _pose_from_odom(msg)
+        if self.args.pose_source == "map_odom":
+            self._set_pose(
+                _map_pose_from_odom(
+                    self.odom_pose,
+                    origin_x=self.args.map_origin_x,
+                    origin_y=self.args.map_origin_y,
+                    origin_yaw=self.args.map_origin_yaw,
+                ),
+                "map_odom",
+            )
+            return
         if self.args.pose_source == "odom" or (
             self.args.pose_source == "auto" and self.pose_source != "tf"
         ):
@@ -193,6 +206,15 @@ class Robot1StackSequence(Node):
 
     def _on_peer_odom(self, msg: Odometry) -> None:
         self.peer_odom_pose = _pose_from_odom(msg)
+        if self.args.peer_pose_source == "map_odom":
+            self.peer_pose = _map_pose_from_odom(
+                self.peer_odom_pose,
+                origin_x=self.args.peer_map_origin_x,
+                origin_y=self.args.peer_map_origin_y,
+                origin_yaw=self.args.peer_map_origin_yaw,
+            )
+            self.peer_pose_source = "map_odom"
+            return
         if self.args.peer_pose_source == "odom" or (
             self.args.peer_pose_source == "auto" and self.peer_pose_source != "tf"
         ):
@@ -527,17 +549,29 @@ class Robot1StackSequence(Node):
         waypoint_index = self.move_state.waypoint_index
         target = self.move_state.route.waypoints[waypoint_index]
         active_axis = self.move_state.route.axes[waypoint_index]
+        final_waypoint_index = len(self.move_state.route.waypoints) - 1
         yaw = _target_yaw_for_segment(
             self.pose,
             target,
             active_axis,
             axis_aligned_heading=self._use_axis_aligned_heading(target_name, active_axis),
         )
+        goal_x, goal_y = target
+        if (
+            waypoint_index == final_waypoint_index
+            and target_name in {self.args.stack_target, self.args.unload_target}
+        ):
+            goal_x, goal_y = _base_goal_from_tracking_target(
+                target,
+                yaw=yaw,
+                offset_x=self.args.tracking_offset_x,
+                offset_y=self.args.tracking_offset_y,
+            )
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = self.args.nav2_goal_frame
         goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x = target[0]
-        goal.pose.pose.position.y = target[1]
+        goal.pose.pose.position.x = goal_x
+        goal.pose.pose.position.y = goal_y
         goal.pose.pose.position.z = 0.0
         goal.pose.pose.orientation = _quaternion_msg_from_yaw(yaw)
 
@@ -546,7 +580,8 @@ class Robot1StackSequence(Node):
         self._publish_status(
             f"phase={self.phase.value}; target={target_name}; nav2=goal_sent; "
             f"waypoint={waypoint_index + 1}/{len(self.move_state.route.waypoints)}; "
-            f"goal=({target[0]:.3f},{target[1]:.3f}); yaw={yaw:.3f}"
+            f"goal=({goal_x:.3f},{goal_y:.3f}); "
+            f"tracking_target=({target[0]:.3f},{target[1]:.3f}); yaw={yaw:.3f}"
         )
         return False
 
@@ -938,6 +973,8 @@ class Robot1StackSequence(Node):
         return self.get_clock().now().nanoseconds / 1e9
 
     def _publish_command(self, linear_x: float, angular_z: float) -> None:
+        if self.cmd_pub is None:
+            return
         now = self._now()
         linear_x, angular_z = _limit_command_acceleration(
             linear_x,
@@ -1037,8 +1074,15 @@ def _build_route_for_sequence_target(
     target_name: str,
     args: argparse.Namespace,
 ) -> AxisRoute:
+    target = PLACES[target_name]
+    if (
+        args.motion_controller == "nav2"
+        and args.prefer_straight_nav2_route
+        and _straight_route_is_clear(start, target)
+    ):
+        return AxisRoute(target_name=target_name, waypoints=[target], axes=["direct"])
+
     if target_name == args.stack_target and args.stack_y_align_x_offset > 0.0:
-        target = PLACES[target_name]
         approach_direction = target[0] - start[0]
         if math.isclose(approach_direction, 0.0, abs_tol=1e-6):
             pre_align_x = target[0] + args.stack_y_align_x_offset
@@ -1169,9 +1213,58 @@ def _target_yaw_for_segment(
     *,
     axis_aligned_heading: bool,
 ) -> float:
-    if axis_aligned_heading:
+    if axis_aligned_heading and active_axis in {"x", "y"}:
         return _axis_target_yaw(_axis_error(pose, target, active_axis), active_axis)
     return math.atan2(target[1] - pose.y, target[0] - pose.x)
+
+
+def _straight_route_is_clear(
+    start: tuple[float, float],
+    target: tuple[float, float],
+) -> bool:
+    zones = load_no_go_zones()
+    if not zones:
+        return True
+    return all(
+        not _line_segment_intersects_rect(start, target, zone.expanded())
+        for zone in zones
+    )
+
+
+def _line_segment_intersects_rect(
+    start: tuple[float, float],
+    target: tuple[float, float],
+    zone,
+) -> bool:
+    x1, y1 = start
+    x2, y2 = target
+    if zone.min_x <= x1 <= zone.max_x and zone.min_y <= y1 <= zone.max_y:
+        return True
+    if zone.min_x <= x2 <= zone.max_x and zone.min_y <= y2 <= zone.max_y:
+        return True
+
+    dx = x2 - x1
+    dy = y2 - y1
+    t_min = 0.0
+    t_max = 1.0
+    for p, q in (
+        (-dx, x1 - zone.min_x),
+        (dx, zone.max_x - x1),
+        (-dy, y1 - zone.min_y),
+        (dy, zone.max_y - y1),
+    ):
+        if math.isclose(p, 0.0, abs_tol=1e-12):
+            if q < 0.0:
+                return False
+            continue
+        ratio = q / p
+        if p < 0.0:
+            t_min = max(t_min, ratio)
+        else:
+            t_max = min(t_max, ratio)
+        if t_min > t_max:
+            return False
+    return True
 
 
 def _should_pre_align_before_approach(
@@ -1398,6 +1491,39 @@ def _offset_pose(pose: Pose2D, *, offset_x: float, offset_y: float) -> Pose2D:
         x=pose.x + offset_x * cos_yaw - offset_y * sin_yaw,
         y=pose.y + offset_x * sin_yaw + offset_y * cos_yaw,
         yaw=pose.yaw,
+    )
+
+
+def _base_goal_from_tracking_target(
+    target: tuple[float, float],
+    *,
+    yaw: float,
+    offset_x: float,
+    offset_y: float,
+) -> tuple[float, float]:
+    if offset_x == 0.0 and offset_y == 0.0:
+        return target
+    cos_yaw = math.cos(yaw)
+    sin_yaw = math.sin(yaw)
+    return (
+        target[0] - offset_x * cos_yaw + offset_y * sin_yaw,
+        target[1] - offset_x * sin_yaw - offset_y * cos_yaw,
+    )
+
+
+def _map_pose_from_odom(
+    pose: Pose2D,
+    *,
+    origin_x: float,
+    origin_y: float,
+    origin_yaw: float,
+) -> Pose2D:
+    cos_yaw = math.cos(origin_yaw)
+    sin_yaw = math.sin(origin_yaw)
+    return Pose2D(
+        x=origin_x + pose.x * cos_yaw - pose.y * sin_yaw,
+        y=origin_y + pose.x * sin_yaw + pose.y * cos_yaw,
+        yaw=_normalize_angle(origin_yaw + pose.yaw),
     )
 
 
@@ -1748,6 +1874,12 @@ def _parse_args(
     robot_id = default_robot_id(default_robot_index)
     default_peer_index = 2 if default_robot_index == 1 else 1
     default_peer_id = default_robot_id(default_peer_index)
+    default_map_origins = {
+        1: (0.0, 0.0, 0.0),
+        2: (0.0, 0.0, 0.0),
+    }
+    default_map_origin = default_map_origins.get(default_robot_index, (0.0, 0.0, 0.0))
+    default_peer_map_origin = default_map_origins.get(default_peer_index, (0.0, 0.0, 0.0))
     default_avoidance_role = "yield" if default_robot_index == 1 else "evade"
     default_reservation_priority = default_robot_index
     stack_targets = sorted(name for name in PLACES if name.startswith("STACK_"))
@@ -1766,16 +1898,22 @@ def _parse_args(
     parser.add_argument("--peer-base-frame", default=default_base_frame(default_peer_index))
     parser.add_argument(
         "--peer-pose-source",
-        choices=["tf", "odom", "auto"],
+        choices=["tf", "odom", "map_odom", "auto"],
         default="tf",
         help="Use this source for the other robot pose used by local avoidance.",
     )
     parser.add_argument(
         "--pose-source",
-        choices=["tf", "odom", "auto"],
+        choices=["tf", "odom", "map_odom", "auto"],
         default="tf",
-        help="Use tf for world poses, odom for robot-local odometry, or auto with tf overriding odom.",
+        help="Use tf for world poses, map_odom to convert odom through a fixed map origin, odom for robot-local odometry, or auto with tf overriding odom.",
     )
+    parser.add_argument("--map-origin-x", type=float, default=default_map_origin[0])
+    parser.add_argument("--map-origin-y", type=float, default=default_map_origin[1])
+    parser.add_argument("--map-origin-yaw", type=float, default=default_map_origin[2])
+    parser.add_argument("--peer-map-origin-x", type=float, default=default_peer_map_origin[0])
+    parser.add_argument("--peer-map-origin-y", type=float, default=default_peer_map_origin[1])
+    parser.add_argument("--peer-map-origin-yaw", type=float, default=default_peer_map_origin[2])
     parser.add_argument("--cmd-vel-topic", default=default_cmd_vel_topic(default_robot_index))
     parser.add_argument("--lift-topic", default=f"/{robot_id}/lift_cmd")
     parser.add_argument(
@@ -1838,8 +1976,14 @@ def _parse_args(
     parser.add_argument(
         "--nav2-expand-grid-steps",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Split long axis route segments into grid-cell-sized Nav2 goals so reservations stay local.",
+    )
+    parser.add_argument(
+        "--prefer-straight-nav2-route",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Send a single straight Nav2 goal when the segment does not cross a configured no-go zone.",
     )
     parser.add_argument(
         "--linear-accel-limit",

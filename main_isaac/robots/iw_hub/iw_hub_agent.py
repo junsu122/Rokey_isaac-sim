@@ -172,8 +172,9 @@ class IwHubAgent(BaseRobotAgent):
         _configure_topics_usd(stage, graph_path, self.name)
         ref_graph = stage.GetPrimAtPath(graph_path)
         if ref_graph and ref_graph.IsValid():
-            ref_graph.SetActive(False)
-            carb.log_info(f"[IwHubAgent] {self.name} reference ActionGraph 비활성화 완료")
+            ref_graph.SetActive(True)
+            carb.log_info(f"[IwHubAgent] {self.name} reference ActionGraph 사용")
+        self._remove_fallback_action_graph(stage)
 
         carb.log_info(f"[IwHubAgent] {self.name} 스폰 완료  "
                       f"xyz={self.spawn_xyz}  yaw={self.spawn_yaw}°")
@@ -184,26 +185,26 @@ class IwHubAgent(BaseRobotAgent):
         stage.Load(self._prim_path)
 
         ref_graph_path = f"{self._prim_path}/{_SENSORS_REL}/ActionGraph"
-
-        graph = og.get_graph_by_path(ref_graph_path)
-        if graph is not None:
-            carb.log_warn(f"[IwHubAgent] {self.name} reference ActionGraph 인식됨 "
-                          f"→ 직접 생성 ActionGraph로 교체")
-            ref_graph = stage.GetPrimAtPath(ref_graph_path)
-            if ref_graph and ref_graph.IsValid():
-                ref_graph.SetActive(False)
-            _build_action_graph(self._prim_path, self.name)
-            return
-
-        # fallback: reference ActionGraph 미인식 → 편집 레이어에 직접 생성
-        carb.log_warn(f"[IwHubAgent] {self.name} reference ActionGraph 미인식 "
-                      f"→ fallback(편집 레이어 직접 생성)")
-
         ref_graph = stage.GetPrimAtPath(ref_graph_path)
         if ref_graph and ref_graph.IsValid():
-            ref_graph.SetActive(False)
+            ref_graph.SetActive(True)
+            _configure_topics_usd(stage, ref_graph_path, self.name)
+            self._remove_fallback_action_graph(stage)
+            carb.log_info(f"[IwHubAgent] {self.name} reference ActionGraph 재사용")
+            return
 
+        carb.log_warn(
+            f"[IwHubAgent] {self.name} reference ActionGraph prim 없음 "
+            f"→ fallback(편집 레이어 직접 생성)"
+        )
         _build_action_graph(self._prim_path, self.name)
+
+    def _remove_fallback_action_graph(self, stage) -> None:
+        fallback_graph_path = f"{self._prim_path}/ActionGraph"
+        fallback_graph = stage.GetPrimAtPath(fallback_graph_path)
+        if fallback_graph and fallback_graph.IsValid():
+            stage.RemovePrim(fallback_graph_path)
+            carb.log_info(f"[IwHubAgent] {self.name} fallback ActionGraph 제거 완료")
 
     def on_physics_step(self, dt: float) -> None:
         pass
