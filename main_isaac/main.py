@@ -19,7 +19,11 @@ simulation_app = SimulationApp({
     "exts": [
         "omni.isaac.ros2_bridge",
         "omni.isaac.core_nodes",
+        "omni.graph.bundle.action",
         "omni.graph.action",
+        "omni.graph.ui",
+        "omni.graph.window.core",
+        "omni.graph.window.action",
         "isaacsim.robot_setup.assembler",
         "isaacsim.robot.wheeled_robots",
     ],
@@ -37,6 +41,15 @@ import time
 import carb
 import omni.kit.app
 from isaacsim.core.api import World
+
+_EXTENSION_MANAGER = omni.kit.app.get_app().get_extension_manager()
+for _ext_name in (
+    "omni.graph.bundle.action",
+    "omni.graph.ui",
+    "omni.graph.window.core",
+    "omni.graph.window.action",
+):
+    _EXTENSION_MANAGER.set_extension_enabled_immediate(_ext_name, True)
 
 from robot_config import PHYSICS_DT, RENDERING_DT, ROBOT_REGISTRY
 from world_setup import setup_warehouse

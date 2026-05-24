@@ -17,7 +17,6 @@ ROS2 토픽 (robot_name = iw_hub_01 / iw_hub_02):
   sub  /{robot_name}/cmd_vel        geometry_msgs/Twist
   sub  /{robot_name}/lift_cmd       sensor_msgs/JointState
   pub  /{robot_name}/odom           nav_msgs/Odometry
-  pub  /{robot_name}/tf             tf2_msgs/TFMessage
 """
 import carb
 import omni.usd
@@ -61,7 +60,6 @@ def _configure_topics_usd(stage, graph_path: str, robot_name: str):
     _set("ros2_publish_odometry",       "inputs:topicName",     f"/{robot_name}/odom")
     _set("ros2_publish_odometry",       "inputs:chassisFrameId",f"{robot_name}/base_link")
     _set("ros2_publish_odometry",       "inputs:odomFrameId",   f"{robot_name}/odom")
-    _set("ros2_publish_transform_tree", "inputs:topicName",     f"/{robot_name}/tf")
     carb.log_info(f"[IwHubAgent] {robot_name} USD 레이어 토픽 설정 완료")
 
 
@@ -93,7 +91,6 @@ def _build_action_graph(robot_root: str, robot_name: str):
                 ("articulation_controller_01",  "isaacsim.core.nodes.IsaacArticulationController"),
                 ("isaac_compute_odometry_node", "isaacsim.core.nodes.IsaacComputeOdometry"),
                 ("ros2_publish_odometry",       "isaacsim.ros2.bridge.ROS2PublishOdometry"),
-                ("ros2_publish_transform_tree", "isaacsim.ros2.bridge.ROS2PublishTransformTree"),
             ],
             og.Controller.Keys.CONNECT: [
                 ("on_playback_tick.outputs:tick",                  "ros2_subscribe_twist.inputs:execIn"),
@@ -118,9 +115,6 @@ def _build_action_graph(robot_root: str, robot_name: str):
                 ("isaac_compute_odometry_node.outputs:orientation",    "ros2_publish_odometry.inputs:orientation"),
                 ("isaac_compute_odometry_node.outputs:position",       "ros2_publish_odometry.inputs:position"),
                 ("isaac_read_simulation_time.outputs:simulationTime",  "ros2_publish_odometry.inputs:timeStamp"),
-                ("on_playback_tick.outputs:tick",                  "ros2_publish_transform_tree.inputs:execIn"),
-                ("ros2_context.outputs:context",                   "ros2_publish_transform_tree.inputs:context"),
-                ("isaac_read_simulation_time.outputs:simulationTime",  "ros2_publish_transform_tree.inputs:timeStamp"),
             ],
             og.Controller.Keys.SET_VALUES: [
                 ("ros2_subscribe_twist.inputs:topicName",        f"/{robot_name}/cmd_vel"),
@@ -132,7 +126,6 @@ def _build_action_graph(robot_root: str, robot_name: str):
                 ("ros2_publish_odometry.inputs:topicName",        f"/{robot_name}/odom"),
                 ("ros2_publish_odometry.inputs:chassisFrameId",   f"{robot_name}/base_link"),
                 ("ros2_publish_odometry.inputs:odomFrameId",      f"{robot_name}/odom"),
-                ("ros2_publish_transform_tree.inputs:topicName",  f"/{robot_name}/tf"),
             ],
         },
     )
@@ -144,9 +137,6 @@ def _build_action_graph(robot_root: str, robot_name: str):
                      "inputs:targetPrim",  [sensor_prim])
     _set_rel_targets(stage, f"{graph_path}/isaac_compute_odometry_node",
                      "inputs:chassisPrim", [sensor_prim])
-    _set_rel_targets(stage, f"{graph_path}/ros2_publish_transform_tree",
-                     "inputs:targetPrims", [sensor_prim])
-
     carb.log_info(f"[IwHubAgent] {robot_name} ActionGraph(fallback) 생성 완료 → {graph_path}")
     return graph
 
@@ -180,6 +170,10 @@ class IwHubAgent(BaseRobotAgent):
         # → reset() 내부 step에서 ROS2 Publisher가 올바른 토픽으로 생성됨
         graph_path = f"{prim_path}/{_SENSORS_REL}/ActionGraph"
         _configure_topics_usd(stage, graph_path, self.name)
+        ref_graph = stage.GetPrimAtPath(graph_path)
+        if ref_graph and ref_graph.IsValid():
+            ref_graph.SetActive(False)
+            carb.log_info(f"[IwHubAgent] {self.name} reference ActionGraph 비활성화 완료")
 
         carb.log_info(f"[IwHubAgent] {self.name} 스폰 완료  "
                       f"xyz={self.spawn_xyz}  yaw={self.spawn_yaw}°")
@@ -193,8 +187,12 @@ class IwHubAgent(BaseRobotAgent):
 
         graph = og.get_graph_by_path(ref_graph_path)
         if graph is not None:
-            carb.log_info(f"[IwHubAgent] {self.name} reference ActionGraph 인식됨 "
-                          f"(토픽은 setup()에서 USD 레이어에 기록 완료)")
+            carb.log_warn(f"[IwHubAgent] {self.name} reference ActionGraph 인식됨 "
+                          f"→ 직접 생성 ActionGraph로 교체")
+            ref_graph = stage.GetPrimAtPath(ref_graph_path)
+            if ref_graph and ref_graph.IsValid():
+                ref_graph.SetActive(False)
+            _build_action_graph(self._prim_path, self.name)
             return
 
         # fallback: reference ActionGraph 미인식 → 편집 레이어에 직접 생성

@@ -10,7 +10,7 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
-        ("share/" + package_name + "/config", glob("config/*.yaml")),
+        ("share/" + package_name + "/config", glob("config/*.yaml") + glob("config/*.pgm")),
         ("share/" + package_name + "/launch", glob("launch/*.py")),
     ],
     install_requires=["setuptools"],
@@ -32,6 +32,8 @@ setup(
             "robot1_stack_sequence = smart_factory.robot1_stack_sequence:main",
             "robot2_stack_sequence = smart_factory.robot2_stack_sequence:main",
             "robot_pose_monitor = smart_factory.robot_pose_monitor:main",
+            "odom_tf_broadcaster = smart_factory.odom_tf_broadcaster:main",
+            "cmd_vel_relay = smart_factory.cmd_vel_relay:main",
             "two_robot_reservation_demo = smart_factory.two_robot_reservation_demo:main",
             "two_robot_reservation_follower = smart_factory.two_robot_reservation_follower:main",
         ],

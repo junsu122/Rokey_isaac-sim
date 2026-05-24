@@ -24,7 +24,7 @@ from smart_factory.robot_defaults import (
 
 try:
     import rclpy
-    from geometry_msgs.msg import Twist
+    from geometry_msgs.msg import Quaternion, Twist
     from nav_msgs.msg import Odometry
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -33,6 +33,7 @@ try:
     from tf2_msgs.msg import TFMessage
 except ImportError:  # Allows algorithm tests without a sourced ROS2 environment.
     rclpy = None
+    Quaternion = object
     Twist = object
     Odometry = object
     Node = object
@@ -40,6 +41,15 @@ except ImportError:  # Allows algorithm tests without a sourced ROS2 environment
     JointState = object
     String = object
     TFMessage = object
+
+try:
+    from action_msgs.msg import GoalStatus
+    from nav2_msgs.action import NavigateToPose
+    from rclpy.action import ActionClient
+except ImportError:
+    ActionClient = object
+    GoalStatus = object
+    NavigateToPose = object
 
 
 class SequencePhase(Enum):
@@ -68,6 +78,10 @@ class MoveState:
     avoidance_applied: bool = False
     reverse_avoidance_waypoint_index: int | None = None
     reverse_avoidance_start_pose: Pose2D | None = None
+    nav_goal_future: object | None = None
+    nav_result_future: object | None = None
+    nav_goal_handle: object | None = None
+    nav_goal_waypoint_index: int | None = None
 
 
 @dataclass
@@ -114,6 +128,13 @@ class Robot1StackSequence(Node):
         self.lift_pub = self.create_publisher(JointState, args.lift_topic, 10)
         self.status_pub = self.create_publisher(String, args.status_topic, 10)
         self.reservation_pub = self.create_publisher(String, args.reservation_topic, 10)
+        self.nav2_client = None
+        if args.motion_controller == "nav2":
+            if ActionClient is object or NavigateToPose is object:
+                raise RuntimeError(
+                    "nav2_msgs and rclpy.action are required for --motion-controller nav2"
+                )
+            self.nav2_client = ActionClient(self, NavigateToPose, args.nav2_action_name)
         self._odom_subscription = self.create_subscription(
             Odometry,
             args.odom_topic,
@@ -150,7 +171,8 @@ class Robot1StackSequence(Node):
             f"{args.unload_target} -> lift down -> "
             f"{args.wait_target}; "
             f"pose_source={args.pose_source}; peer={args.peer_robot_id}; "
-            f"avoidance_role={args.avoidance_role}; reservation_priority={args.reservation_priority}"
+            f"avoidance_role={args.avoidance_role}; reservation_priority={args.reservation_priority}; "
+            f"motion_controller={args.motion_controller}"
         )
 
     def _on_odom(self, msg: Odometry) -> None:
@@ -301,13 +323,14 @@ class Robot1StackSequence(Node):
         if self.move_state.target_name != target_name:
             self.move_state = MoveState(target_name)
 
-        safety_wait_reason = self._peer_safety_wait_reason()
-        if safety_wait_reason:
-            self._publish_stop()
-            self._publish_status(
-                f"phase={self.phase.value}; target={target_name}; peer_safety_wait={safety_wait_reason}"
-            )
-            return False
+        if self.args.motion_controller != "nav2":
+            safety_wait_reason = self._peer_safety_wait_reason()
+            if safety_wait_reason:
+                self._publish_stop()
+                self._publish_status(
+                    f"phase={self.phase.value}; target={target_name}; peer_safety_wait={safety_wait_reason}"
+                )
+                return False
 
         if self.move_state.route is None:
             route_start_pose = self._pose_for_route_start(target_name)
@@ -316,6 +339,14 @@ class Robot1StackSequence(Node):
                 target_name,
                 self.args,
             )
+            if self.args.motion_controller == "nav2" and self.args.nav2_expand_grid_steps:
+                self.move_state.route = _expand_route_for_grid_reservation(
+                    (route_start_pose.x, route_start_pose.y),
+                    self.move_state.route,
+                    cell_size=self.args.grid_cell_size,
+                    origin_x=self.args.grid_origin_x,
+                    origin_y=self.args.grid_origin_y,
+                )
             self.get_logger().info(
                 f"Route to {self.move_state.route.target_name}: "
                 + " -> ".join(f"({x:.3f},{y:.3f})" for x, y in self.move_state.route.waypoints)
@@ -327,6 +358,9 @@ class Robot1StackSequence(Node):
                     for (x, y), axis in zip(self.move_state.route.waypoints, self.move_state.route.axes)
                 )
             )
+
+        if self.args.motion_controller == "nav2":
+            return self._step_nav2_move(target_name)
 
         if self.move_state.waypoint_index >= len(self.move_state.route.waypoints):
             self._publish_stop()
@@ -411,6 +445,109 @@ class Robot1StackSequence(Node):
         if command.done:
             self.move_state.waypoint_index += 1
             self.move_state.segment_start_pose = None
+        return False
+
+    def _step_nav2_move(self, target_name: str) -> bool:
+        if self.move_state.route is None:
+            return False
+        if self.nav2_client is None:
+            raise RuntimeError("Nav2 action client is not initialized")
+
+        if self.move_state.waypoint_index >= len(self.move_state.route.waypoints):
+            self._publish_status(f"phase={self.phase.value}; target={target_name}; done=True")
+            return True
+
+        if self.move_state.nav_goal_future is not None:
+            if not self.move_state.nav_goal_future.done():
+                self._publish_status(
+                    f"phase={self.phase.value}; target={target_name}; nav2=sending_goal"
+                )
+                return False
+
+            goal_handle = self.move_state.nav_goal_future.result()
+            self.move_state.nav_goal_future = None
+            if not goal_handle.accepted:
+                self._publish_status(
+                    f"phase={self.phase.value}; target={target_name}; nav2=goal_rejected"
+                )
+                self.move_state.nav_goal_handle = None
+                return False
+
+            self.move_state.nav_goal_handle = goal_handle
+            self.move_state.nav_result_future = goal_handle.get_result_async()
+
+        if self.move_state.nav_result_future is not None:
+            if not self.move_state.nav_result_future.done():
+                target = self.move_state.route.waypoints[self.move_state.waypoint_index]
+                self._publish_status(
+                    f"phase={self.phase.value}; target={target_name}; nav2=active; "
+                    f"waypoint={self.move_state.waypoint_index + 1}/"
+                    f"{len(self.move_state.route.waypoints)}; "
+                    f"goal=({target[0]:.3f},{target[1]:.3f})"
+                )
+                return False
+
+            result = self.move_state.nav_result_future.result()
+            status = getattr(result, "status", None)
+            self.move_state.nav_result_future = None
+            self.move_state.nav_goal_handle = None
+            self.move_state.nav_goal_waypoint_index = None
+
+            if status == GoalStatus.STATUS_SUCCEEDED:
+                self.move_state.waypoint_index += 1
+                self.move_state.segment_start_pose = None
+                return False
+
+            self._publish_status(
+                f"phase={self.phase.value}; target={target_name}; nav2=result_status={status}"
+            )
+            return False
+
+        reservation_wait_reason = self._reservation_wait_reason(target_name)
+        if reservation_wait_reason:
+            self._publish_status(
+                f"phase={self.phase.value}; target={target_name}; reservation_wait={reservation_wait_reason}"
+            )
+            return False
+
+        grid_wait_reason = self._grid_reservation_wait_reason()
+        if grid_wait_reason:
+            self._publish_status(
+                f"phase={self.phase.value}; target={target_name}; grid_reservation_wait={grid_wait_reason}"
+            )
+            return False
+
+        if not self.nav2_client.wait_for_server(timeout_sec=0.0):
+            self._publish_status(
+                f"phase={self.phase.value}; target={target_name}; nav2=waiting_for_server; "
+                f"action={self.args.nav2_action_name}"
+            )
+            return False
+
+        waypoint_index = self.move_state.waypoint_index
+        target = self.move_state.route.waypoints[waypoint_index]
+        active_axis = self.move_state.route.axes[waypoint_index]
+        yaw = _target_yaw_for_segment(
+            self.pose,
+            target,
+            active_axis,
+            axis_aligned_heading=self._use_axis_aligned_heading(target_name, active_axis),
+        )
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = self.args.nav2_goal_frame
+        goal.pose.header.stamp = self.get_clock().now().to_msg()
+        goal.pose.pose.position.x = target[0]
+        goal.pose.pose.position.y = target[1]
+        goal.pose.pose.position.z = 0.0
+        goal.pose.pose.orientation = _quaternion_msg_from_yaw(yaw)
+
+        self.move_state.nav_goal_waypoint_index = waypoint_index
+        self.move_state.nav_goal_future = self.nav2_client.send_goal_async(goal)
+        self._publish_status(
+            f"phase={self.phase.value}; target={target_name}; nav2=goal_sent; "
+            f"waypoint={waypoint_index + 1}/{len(self.move_state.route.waypoints)}; "
+            f"goal=({target[0]:.3f},{target[1]:.3f}); yaw={yaw:.3f}"
+        )
         return False
 
     def _peer_safety_wait_reason(self) -> str:
@@ -935,6 +1072,56 @@ def _build_route_for_sequence_target(
     )
 
 
+def _expand_route_for_grid_reservation(
+    start: tuple[float, float],
+    route: AxisRoute,
+    *,
+    cell_size: float,
+    origin_x: float,
+    origin_y: float,
+) -> AxisRoute:
+    if cell_size <= 0.0:
+        return route
+
+    expanded_steps: list[tuple[tuple[float, float], str]] = []
+    current_point = start
+    current_cell = _world_to_grid_cell(
+        current_point[0],
+        current_point[1],
+        cell_size=cell_size,
+        origin_x=origin_x,
+        origin_y=origin_y,
+    )
+
+    for target, active_axis in zip(route.waypoints, route.axes):
+        target_cell = _world_to_grid_cell(
+            target[0],
+            target[1],
+            cell_size=cell_size,
+            origin_x=origin_x,
+            origin_y=origin_y,
+        )
+        while current_cell != target_cell:
+            next_cell = _step_cell_toward(current_cell, target_cell, active_axis)
+            if next_cell == current_cell:
+                break
+            waypoint = _cell_center(
+                next_cell,
+                cell_size=cell_size,
+                origin_x=origin_x,
+                origin_y=origin_y,
+            )
+            expanded_steps.append((waypoint, active_axis))
+            current_cell = next_cell
+            current_point = waypoint
+        expanded_steps.append((target, active_axis))
+        current_point = target
+        current_cell = target_cell
+
+    waypoints, axes = _deduplicate_route_steps(start, expanded_steps)
+    return AxisRoute(target_name=route.target_name, waypoints=waypoints, axes=axes)
+
+
 def _axis_order_for_sequence_target(target_name: str, args: argparse.Namespace) -> str:
     if target_name == args.stack_target:
         return args.stack_axis_order
@@ -1176,6 +1363,15 @@ def _pose_from_transform(transform) -> Pose2D:
     )
 
 
+def _quaternion_msg_from_yaw(yaw: float):
+    orientation = Quaternion()
+    orientation.x = 0.0
+    orientation.y = 0.0
+    orientation.z = math.sin(yaw * 0.5)
+    orientation.w = math.cos(yaw * 0.5)
+    return orientation
+
+
 def _is_world_to_robot_base(transform, base_frame: str) -> bool:
     if transform.header.frame_id != "world":
         return False
@@ -1349,6 +1545,24 @@ def _next_grid_cell(
         return current_x + direction, current_y
     direction = 1 if target_cell[1] > current_y else -1
     return current_x, current_y + direction
+
+
+def _step_cell_toward(
+    current_cell: tuple[int, int],
+    target_cell: tuple[int, int],
+    active_axis: str,
+) -> tuple[int, int]:
+    current_x, current_y = current_cell
+    target_x, target_y = target_cell
+    if active_axis == "x" and current_x != target_x:
+        return current_x + _sign(target_x - current_x), current_y
+    if active_axis == "y" and current_y != target_y:
+        return current_x, current_y + _sign(target_y - current_y)
+    if current_x != target_x:
+        return current_x + _sign(target_x - current_x), current_y
+    if current_y != target_y:
+        return current_x, current_y + _sign(target_y - current_y)
+    return current_cell
 
 
 def _is_grid_edge_swap(
@@ -1605,6 +1819,28 @@ def _parse_args(
     )
     parser.add_argument("--speed", type=float, default=3.0)
     parser.add_argument("--stack-approach-speed", type=float, default=0.5)
+    parser.add_argument(
+        "--motion-controller",
+        choices=["axis", "nav2"],
+        default="axis",
+        help="Use the existing direct axis controller or send each reserved waypoint to Nav2.",
+    )
+    parser.add_argument(
+        "--nav2-action-name",
+        default=f"/{robot_id}/navigate_to_pose",
+        help="NavigateToPose action name for this robot's Nav2 instance.",
+    )
+    parser.add_argument(
+        "--nav2-goal-frame",
+        default="map",
+        help="Frame id used for Nav2 goals. Use world only if your Nav2 stack is configured that way.",
+    )
+    parser.add_argument(
+        "--nav2-expand-grid-steps",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Split long axis route segments into grid-cell-sized Nav2 goals so reservations stay local.",
+    )
     parser.add_argument(
         "--linear-accel-limit",
         type=float,
