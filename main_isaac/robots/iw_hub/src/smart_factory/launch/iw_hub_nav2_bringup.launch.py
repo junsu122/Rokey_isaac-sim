@@ -17,6 +17,13 @@ _NAV2_LIFECYCLE_NODES = [
     "velocity_smoother",
 ]
 
+_IW_HUB_MAP_ODOM = {
+    # Keep these in sync with main_isaac/robot_config.py IW Hub spawn poses.
+    # If /iw_hub_XX/odom already starts with the spawn yaw, set yaw to 0.0.
+    "iw_hub_01": (-8.0, -14.0, 1.57079632679),
+    "iw_hub_02": (-10.0, -14.0, 1.57079632679),
+}
+
 
 def _static_tf(name: str, x: float, y: float, yaw: float, child_frame: str) -> Node:
     return Node(
@@ -138,8 +145,8 @@ def generate_launch_description():
     hub_2_params = os.path.join(config_dir, "nav2_iw_hub_02.yaml")
 
     actions = [
-        _static_tf("iw_hub_01_map_to_odom", 0.0, 0.0, 0.0, "iw_hub_01/odom"),
-        _static_tf("iw_hub_02_map_to_odom", 0.0, 0.0, 0.0, "iw_hub_02/odom"),
+        _static_tf("iw_hub_01_map_to_odom", *_IW_HUB_MAP_ODOM["iw_hub_01"], "iw_hub_01/odom"),
+        _static_tf("iw_hub_02_map_to_odom", *_IW_HUB_MAP_ODOM["iw_hub_02"], "iw_hub_02/odom"),
         Node(
             package="smart_factory",
             executable="odom_tf_broadcaster",

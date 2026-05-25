@@ -2,6 +2,15 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 
 
+_IW_HUB_MAP_ODOM = {
+    # Keep these in sync with main_isaac/robot_config.py IW Hub spawn poses
+    # and iw_hub_nav2_bringup.launch.py static map->odom transforms.
+    # If /iw_hub_XX/odom already starts with the spawn yaw, set yaw to 0.0.
+    1: (-8.0, -14.0, 1.57079632679),
+    2: (-10.0, -14.0, 1.57079632679),
+}
+
+
 def _sequence_node(
     robot_index: int,
     executable: str,
@@ -13,12 +22,8 @@ def _sequence_node(
     nav2_namespace = f"iw_nav_{robot_index}"
     peer_index = 2 if robot_index == 1 else 1
     peer_id = f"iw_hub_{peer_index:02d}"
-    map_origins = {
-        1: (0.0, 0.0, 0.0),
-        2: (0.0, 0.0, 0.0),
-    }
-    origin = map_origins[robot_index]
-    peer_origin = map_origins[peer_index]
+    origin = _IW_HUB_MAP_ODOM[robot_index]
+    peer_origin = _IW_HUB_MAP_ODOM[peer_index]
     return Node(
         package="smart_factory",
         executable=executable,
@@ -33,7 +38,7 @@ def _sequence_node(
             "--avoidance-role", avoidance_role,
             "--enable-grid-reservation",
             "--enable-place-reservation",
-            "--no-enable-peer-safety-stop",
+            "--enable-peer-safety-stop",
             "--robot-id", robot_id,
             "--peer-robot-id", peer_id,
             "--tf-topic", "/tf",
@@ -55,6 +60,6 @@ def _sequence_node(
 
 def generate_launch_description():
     return LaunchDescription([
-        _sequence_node(1, "robot1_stack_sequence", avoidance_role="off", stack_target="STACK_3"),
-        _sequence_node(2, "robot2_stack_sequence", avoidance_role="off"),
+        _sequence_node(1, "robot1_stack_sequence", avoidance_role="yield", stack_target="STACK_3"),
+        _sequence_node(2, "robot2_stack_sequence", avoidance_role="evade"),
     ])

@@ -82,6 +82,9 @@ class MoveState:
     nav_result_future: object | None = None
     nav_goal_handle: object | None = None
     nav_goal_waypoint_index: int | None = None
+    nav_cancel_future: object | None = None
+    nav_cancel_reason: str | None = None
+    nav_replan_route: AxisRoute | None = None
 
 
 @dataclass
@@ -94,6 +97,8 @@ class PeerReservationState:
     received_at: float
     cell: tuple[int, int] | None = None
     next_cell: tuple[int, int] | None = None
+    cells: set[tuple[int, int]] | None = None
+    next_cells: set[tuple[int, int]] | None = None
 
 
 class Robot1StackSequence(Node):
@@ -479,6 +484,16 @@ class Robot1StackSequence(Node):
             self._publish_status(f"phase={self.phase.value}; target={target_name}; done=True")
             return True
 
+        if self.move_state.nav_cancel_future is not None:
+            if not self.move_state.nav_cancel_future.done():
+                self._publish_status(
+                    f"phase={self.phase.value}; target={target_name}; nav2=canceling; "
+                    f"reason={self.move_state.nav_cancel_reason}"
+                )
+                return False
+            self._finish_nav2_cancel(target_name)
+            return False
+
         if self.move_state.nav_goal_future is not None:
             if not self.move_state.nav_goal_future.done():
                 self._publish_status(
@@ -500,6 +515,10 @@ class Robot1StackSequence(Node):
 
         if self.move_state.nav_result_future is not None:
             if not self.move_state.nav_result_future.done():
+                cancel_reason, replan_route = self._nav2_cancel_plan(target_name)
+                if cancel_reason:
+                    self._request_nav2_cancel(target_name, cancel_reason, replan_route)
+                    return False
                 target = self.move_state.route.waypoints[self.move_state.waypoint_index]
                 self._publish_status(
                     f"phase={self.phase.value}; target={target_name}; nav2=active; "
@@ -522,6 +541,13 @@ class Robot1StackSequence(Node):
 
             self._publish_status(
                 f"phase={self.phase.value}; target={target_name}; nav2=result_status={status}"
+            )
+            return False
+
+        peer_safety_wait_reason = self._peer_safety_wait_reason()
+        if peer_safety_wait_reason:
+            self._publish_status(
+                f"phase={self.phase.value}; target={target_name}; peer_safety_wait={peer_safety_wait_reason}"
             )
             return False
 
@@ -585,6 +611,184 @@ class Robot1StackSequence(Node):
         )
         return False
 
+    def _nav2_cancel_plan(self, target_name: str) -> tuple[str, AxisRoute | None]:
+        bypass_reason, bypass_route = self._nav2_bypass_plan(target_name)
+        if bypass_reason:
+            return bypass_reason, bypass_route
+
+        peer_safety_wait_reason = self._peer_safety_wait_reason()
+        if peer_safety_wait_reason:
+            return f"peer_safety:{peer_safety_wait_reason}", None
+
+        reservation_wait_reason = self._reservation_wait_reason(target_name)
+        if reservation_wait_reason:
+            return f"place_reservation:{reservation_wait_reason}", None
+
+        grid_wait_reason = self._grid_reservation_wait_reason()
+        if grid_wait_reason:
+            return f"grid_reservation:{grid_wait_reason}", None
+        return "", None
+
+    def _nav2_bypass_plan(self, target_name: str) -> tuple[str, AxisRoute | None]:
+        if (
+            self.args.avoidance_role != "evade"
+            or self.pose is None
+            or self.move_state.route is None
+            or self.move_state.waypoint_index >= len(self.move_state.route.waypoints)
+            or self.move_state.avoidance_applied
+        ):
+            return "", None
+
+        route = self.move_state.route
+        waypoint_index = self.move_state.waypoint_index
+        target = route.waypoints[waypoint_index]
+        active_axis = route.axes[waypoint_index]
+        control_pose = self._pose_for_segment(target_name, active_axis)
+        if active_axis not in {"x", "y"}:
+            active_axis = _dominant_axis((control_pose.x, control_pose.y), target)
+            route = _replace_route_axis(route, waypoint_index, active_axis)
+
+        if self.peer_pose is not None and _is_peer_head_on_conflict(
+            control_pose,
+            self.peer_pose,
+            target,
+            active_axis,
+            lane_tolerance=self.args.peer_lane_tolerance,
+            trigger_distance=self.args.peer_avoidance_trigger_distance,
+            path_margin=self.args.peer_avoidance_path_margin,
+            peer_yaw_tolerance=self.args.peer_yaw_tolerance,
+        ):
+            bypass = _build_left_bypass_route(
+                (control_pose.x, control_pose.y),
+                self.peer_pose,
+                route,
+                waypoint_index,
+                active_axis,
+                lateral_offset=self.args.peer_avoidance_lateral_offset,
+                pass_distance=self.args.peer_avoidance_pass_distance,
+            )
+            if bypass is not None:
+                return f"peer_head_on:bypass peer={self.args.peer_robot_id}", bypass
+
+        grid_bypass_reason, grid_bypass = self._nav2_grid_bypass_plan(route, waypoint_index)
+        if grid_bypass_reason:
+            return grid_bypass_reason, grid_bypass
+        return "", None
+
+    def _nav2_grid_bypass_plan(
+        self,
+        route: AxisRoute,
+        waypoint_index: int,
+    ) -> tuple[str, AxisRoute | None]:
+        if (
+            not self.args.enable_grid_reservation
+            or self.peer_reservation is None
+            or not self.peer_reservation.active
+            or self.pose is None
+        ):
+            return "", None
+        if self._now() - self.peer_reservation.received_at > self.args.peer_reservation_timeout:
+            return "", None
+
+        if route.axes[waypoint_index] not in {"x", "y"}:
+            route = _replace_route_axis(
+                route,
+                waypoint_index,
+                _dominant_axis((self.pose.x, self.pose.y), route.waypoints[waypoint_index]),
+            )
+
+        current_cell = _world_to_grid_cell(
+            self.pose.x,
+            self.pose.y,
+            cell_size=self.args.grid_cell_size,
+            origin_x=self.args.grid_origin_x,
+            origin_y=self.args.grid_origin_y,
+        )
+        next_cell = _next_grid_cell(
+            current_cell,
+            self.pose,
+            route,
+            waypoint_index,
+            cell_size=self.args.grid_cell_size,
+            origin_x=self.args.grid_origin_x,
+            origin_y=self.args.grid_origin_y,
+        )
+        current_cells = _expanded_grid_cells(current_cell, self.args.grid_reservation_margin_cells)
+        next_cells = _expanded_grid_cells(next_cell, self.args.grid_reservation_margin_cells)
+        peer_cells = _reservation_cells(self.peer_reservation)
+        peer_next_cells = _reservation_next_cells(self.peer_reservation)
+        if not peer_cells and not peer_next_cells:
+            return "", None
+        blocks_next_cell = bool(next_cells & (peer_cells | peer_next_cells))
+        peer_cell = self.peer_reservation.cell or _first_grid_cell(peer_cells)
+        peer_next_cell = self.peer_reservation.next_cell or _first_grid_cell(peer_next_cells) or peer_cell
+        if peer_cell is None or peer_next_cell is None:
+            return "", None
+        edge_swap = _is_grid_edge_swap(
+            current_cell=current_cell,
+            next_cell=next_cell,
+            peer_cell=peer_cell,
+            peer_next_cell=peer_next_cell,
+        ) or bool(current_cells & peer_next_cells and next_cells & peer_cells)
+        if not blocks_next_cell and not edge_swap:
+            return "", None
+
+        bypass = _build_grid_reverse_right_bypass_route(
+            (self.pose.x, self.pose.y),
+            route,
+            waypoint_index,
+            current_cell=current_cell,
+            next_cell=next_cell,
+            peer_cell=peer_cell,
+            peer_next_cell=peer_next_cell,
+            cell_size=self.args.grid_cell_size,
+            origin_x=self.args.grid_origin_x,
+            origin_y=self.args.grid_origin_y,
+        )
+        if bypass is None:
+            return "", None
+        reason = "grid_edge_swap" if edge_swap else "grid_occupied_next"
+        return f"{reason}:bypass peer={self.peer_reservation.robot_id}", bypass
+
+    def _request_nav2_cancel(
+        self,
+        target_name: str,
+        reason: str,
+        replan_route: AxisRoute | None = None,
+    ) -> None:
+        goal_handle = self.move_state.nav_goal_handle
+        if goal_handle is None:
+            return
+        self.move_state.nav_cancel_reason = reason
+        self.move_state.nav_replan_route = replan_route
+        self.move_state.nav_cancel_future = goal_handle.cancel_goal_async()
+        replan_text = "bypass" if replan_route is not None else "wait"
+        self._publish_status(
+            f"phase={self.phase.value}; target={target_name}; nav2=cancel_requested; "
+            f"reason={reason}; replan={replan_text}"
+        )
+
+    def _finish_nav2_cancel(self, target_name: str) -> None:
+        reason = self.move_state.nav_cancel_reason
+        replan_route = self.move_state.nav_replan_route
+        self.move_state.nav_goal_future = None
+        self.move_state.nav_result_future = None
+        self.move_state.nav_goal_handle = None
+        self.move_state.nav_goal_waypoint_index = None
+        self.move_state.nav_cancel_future = None
+        self.move_state.nav_cancel_reason = None
+        self.move_state.nav_replan_route = None
+        self.move_state.route = replan_route
+        self.move_state.waypoint_index = 0
+        self.move_state.segment_start_pose = None
+        self.move_state.pre_aligned_waypoint_index = None
+        self.move_state.avoidance_applied = replan_route is not None
+        self._publish_status(
+            f"phase={self.phase.value}; target={target_name}; nav2=canceled; "
+            f"reason={reason}; replan="
+            f"{'bypass_route' if replan_route is not None else 'from_current_pose'}"
+        )
+
     def _peer_safety_wait_reason(self) -> str:
         if not self.args.enable_peer_safety_stop or self.peer_pose is None or self.pose is None:
             self.peer_safety_paused = False
@@ -630,6 +834,8 @@ class Robot1StackSequence(Node):
             origin_x=self.args.grid_origin_x,
             origin_y=self.args.grid_origin_y,
         )
+        current_cells = _expanded_grid_cells(current_cell, self.args.grid_reservation_margin_cells)
+        next_cells = _expanded_grid_cells(next_cell, self.args.grid_reservation_margin_cells)
         if self.peer_reservation is not None and self.peer_reservation.active:
             if (
                 self.args.avoidance_role == "evade"
@@ -646,11 +852,18 @@ class Robot1StackSequence(Node):
                 priority=self.args.reservation_priority,
                 current_cell=current_cell,
                 next_cell=next_cell,
+                current_cells=current_cells,
+                next_cells=next_cells,
                 peer=self.peer_reservation,
             )
             if reason:
                 return reason
-            if self.peer_reservation.cell is not None or self.peer_reservation.next_cell is not None:
+            if (
+                self.peer_reservation.cell is not None
+                or self.peer_reservation.next_cell is not None
+                or self.peer_reservation.cells
+                or self.peer_reservation.next_cells
+            ):
                 return ""
 
         if _reservation_has_priority(
@@ -689,7 +902,12 @@ class Robot1StackSequence(Node):
             return ""
         if self._now() - self.peer_reservation.received_at > self.args.peer_reservation_timeout:
             return ""
-        if self.peer_reservation.cell is None and self.peer_reservation.next_cell is None:
+        if (
+            self.peer_reservation.cell is None
+            and self.peer_reservation.next_cell is None
+            and not self.peer_reservation.cells
+            and not self.peer_reservation.next_cells
+        ):
             return ""
 
         current_cell = _world_to_grid_cell(
@@ -708,12 +926,16 @@ class Robot1StackSequence(Node):
             origin_x=self.args.grid_origin_x,
             origin_y=self.args.grid_origin_y,
         )
+        current_cells = _expanded_grid_cells(current_cell, self.args.grid_reservation_margin_cells)
+        next_cells = _expanded_grid_cells(next_cell, self.args.grid_reservation_margin_cells)
 
         return _grid_reservation_conflict_reason(
             robot_id=self.args.robot_id,
             priority=self.args.reservation_priority,
             current_cell=current_cell,
             next_cell=next_cell,
+            current_cells=current_cells,
+            next_cells=next_cells,
             peer=self.peer_reservation,
         )
 
@@ -1012,6 +1234,8 @@ class Robot1StackSequence(Node):
         msg = String()
         cell = None
         next_cell = None
+        cells = None
+        next_cells = None
         if self.pose is not None:
             cell = _world_to_grid_cell(
                 self.pose.x,
@@ -1029,6 +1253,8 @@ class Robot1StackSequence(Node):
                 origin_x=self.args.grid_origin_x,
                 origin_y=self.args.grid_origin_y,
             )
+            cells = _expanded_grid_cells(cell, self.args.grid_reservation_margin_cells)
+            next_cells = _expanded_grid_cells(next_cell, self.args.grid_reservation_margin_cells)
         msg.data = _format_reservation_status(
             robot_id=self.args.robot_id,
             phase=self.phase.value,
@@ -1037,6 +1263,8 @@ class Robot1StackSequence(Node):
             active=self.phase != SequencePhase.COMPLETE,
             cell=cell,
             next_cell=next_cell,
+            cells=cells,
+            next_cells=next_cells,
         )
         self.reservation_pub.publish(msg)
 
@@ -1192,6 +1420,19 @@ def _deduplicate_route_steps(
             axes.append(axis)
             previous = point
     return waypoints, axes
+
+
+def _dominant_axis(start: tuple[float, float], target: tuple[float, float]) -> str:
+    dx = abs(target[0] - start[0])
+    dy = abs(target[1] - start[1])
+    return "x" if dx >= dy else "y"
+
+
+def _replace_route_axis(route: AxisRoute, waypoint_index: int, active_axis: str) -> AxisRoute:
+    axes = list(route.axes)
+    if 0 <= waypoint_index < len(axes):
+        axes[waypoint_index] = active_axis
+    return AxisRoute(target_name=route.target_name, waypoints=list(route.waypoints), axes=axes)
 
 
 def _axis_error(pose: Pose2D, target: tuple[float, float], active_axis: str) -> float:
@@ -1573,6 +1814,8 @@ def _format_reservation_status(
     active: bool,
     cell: tuple[int, int] | None = None,
     next_cell: tuple[int, int] | None = None,
+    cells: set[tuple[int, int]] | None = None,
+    next_cells: set[tuple[int, int]] | None = None,
 ) -> str:
     active_text = "1" if active else "0"
     text = (
@@ -1583,6 +1826,10 @@ def _format_reservation_status(
         text += f";cell={cell[0]},{cell[1]}"
     if next_cell is not None:
         text += f";next={next_cell[0]},{next_cell[1]}"
+    if cells:
+        text += f";cells={_format_grid_cells(cells)}"
+    if next_cells:
+        text += f";next_cells={_format_grid_cells(next_cells)}"
     return text
 
 
@@ -1601,6 +1848,8 @@ def _parse_reservation_status(text: str, *, received_at: float) -> PeerReservati
         return None
     cell = _parse_grid_cell(fields.get("cell", ""))
     next_cell = _parse_grid_cell(fields.get("next", ""))
+    cells = _parse_grid_cells(fields.get("cells", ""))
+    next_cells = _parse_grid_cells(fields.get("next_cells", ""))
     return PeerReservationState(
         robot_id=fields["robot"],
         phase=fields["phase"],
@@ -1610,6 +1859,8 @@ def _parse_reservation_status(text: str, *, received_at: float) -> PeerReservati
         received_at=received_at,
         cell=cell,
         next_cell=next_cell,
+        cells=cells,
+        next_cells=next_cells,
     )
 
 
@@ -1623,6 +1874,47 @@ def _parse_grid_cell(text: str) -> tuple[int, int] | None:
         return int(parts[0]), int(parts[1])
     except ValueError:
         return None
+
+
+def _format_grid_cells(cells: set[tuple[int, int]]) -> str:
+    return "|".join(f"{x},{y}" for x, y in sorted(cells))
+
+
+def _parse_grid_cells(text: str) -> set[tuple[int, int]] | None:
+    if not text:
+        return None
+    cells = set()
+    for part in text.split("|"):
+        cell = _parse_grid_cell(part)
+        if cell is not None:
+            cells.add(cell)
+    return cells or None
+
+
+def _expanded_grid_cells(center: tuple[int, int], margin_cells: int) -> set[tuple[int, int]]:
+    margin = max(0, int(margin_cells))
+    x, y = center
+    return {
+        (x + dx, y + dy)
+        for dx in range(-margin, margin + 1)
+        for dy in range(-margin, margin + 1)
+    }
+
+
+def _reservation_cells(peer: PeerReservationState) -> set[tuple[int, int]]:
+    if peer.cells:
+        return set(peer.cells)
+    return {peer.cell} if peer.cell is not None else set()
+
+
+def _reservation_next_cells(peer: PeerReservationState) -> set[tuple[int, int]]:
+    if peer.next_cells:
+        return set(peer.next_cells)
+    return {peer.next_cell} if peer.next_cell is not None else set()
+
+
+def _first_grid_cell(cells: set[tuple[int, int]]) -> tuple[int, int] | None:
+    return sorted(cells)[0] if cells else None
 
 
 def _world_to_grid_cell(
@@ -1821,11 +2113,26 @@ def _grid_reservation_conflict_reason(
     priority: int,
     current_cell: tuple[int, int],
     next_cell: tuple[int, int],
+    current_cells: set[tuple[int, int]] | None = None,
+    next_cells: set[tuple[int, int]] | None = None,
     peer: PeerReservationState,
 ) -> str:
     peer_cell = peer.cell
     peer_next = peer.next_cell
     has_priority = _reservation_has_priority(robot_id, priority, peer.robot_id, peer.priority)
+    occupied_cells = _reservation_cells(peer)
+    reserved_next_cells = _reservation_next_cells(peer)
+    current_footprint = current_cells or {current_cell}
+    next_footprint = next_cells or {next_cell}
+
+    if reserved_next_cells & current_footprint and occupied_cells & next_footprint:
+        if has_priority:
+            return ""
+        return f"peer={peer.robot_id} edge_swap={current_cell}->{next_cell}"
+    if occupied_cells & next_footprint:
+        return f"peer={peer.robot_id} occupies_next={next_cell}"
+    if reserved_next_cells & next_footprint and not has_priority:
+        return f"peer={peer.robot_id} reserves_next={next_cell}"
 
     if peer_next == current_cell and peer_cell == next_cell:
         if has_priority:
@@ -2080,6 +2387,12 @@ def _parse_args(
         type=float,
         default=0.0,
         help="World y coordinate for grid cell (0,0) origin.",
+    )
+    parser.add_argument(
+        "--grid-reservation-margin-cells",
+        type=int,
+        default=1,
+        help="Reserve this many neighboring grid cells around current and next center cells.",
     )
     parser.add_argument(
         "--enable-peer-safety-stop",
