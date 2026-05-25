@@ -20,8 +20,8 @@ _NAV2_LIFECYCLE_NODES = [
 _IW_HUB_MAP_ODOM = {
     # Keep these in sync with main_isaac/robot_config.py IW Hub spawn poses.
     # If /iw_hub_XX/odom already starts with the spawn yaw, set yaw to 0.0.
-    "iw_hub_01": (-8.0, -14.0, 1.57079632679),
-    "iw_hub_02": (-10.0, -14.0, 1.57079632679),
+    "iw_hub_01": (0.0, -14.0, 0.0),
+    "iw_hub_02": (6.0, -14.0, 0.0),
 }
 
 

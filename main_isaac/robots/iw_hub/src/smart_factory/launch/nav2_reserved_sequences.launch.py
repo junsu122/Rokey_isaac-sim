@@ -6,8 +6,8 @@ _IW_HUB_MAP_ODOM = {
     # Keep these in sync with main_isaac/robot_config.py IW Hub spawn poses
     # and iw_hub_nav2_bringup.launch.py static map->odom transforms.
     # If /iw_hub_XX/odom already starts with the spawn yaw, set yaw to 0.0.
-    1: (-8.0, -14.0, 1.57079632679),
-    2: (-10.0, -14.0, 1.57079632679),
+    1: (0.0, -14.0, 0.0),
+    2: (6.0, -14.0, 0.0),
 }
 
 

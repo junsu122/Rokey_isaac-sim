@@ -387,7 +387,206 @@ robot_pose_monitor optional
 3. task ACK, done, failed, canceled 상태 송신.
 4. 네트워크 끊김 시 retry 정책 추가.
 
-## 11. 테스트 시나리오
+## 11. 우선 만들 행동: replace_stack_shelf
+
+서버 연결 전에 먼저 만들어둘 핵심 행동은 `replace_stack_shelf`이다.
+
+의미:
+
+```text
+기존 stack에 있는 선반을 unload로 빼고,
+shelf_storage에 있는 빈 선반을 다시 같은 stack에 채운다.
+```
+
+예시 명령:
+
+```text
+STACK_1로 가서 선반을 들고
+UNLOAD_2에 내려놓고
+SHELF_STORAGE_3에 가서 빈 선반을 들고
+STACK_1에 다시 내려놓는다.
+```
+
+### 서버 task 형태
+
+서버가 나중에 내려줄 JSON은 다음처럼 만들 수 있다.
+
+```json
+{
+  "task_id": "job_0001",
+  "type": "replace_stack_shelf",
+  "robot_id": "auto",
+  "source_stack": "STACK_1",
+  "unload_target": "UNLOAD_2",
+  "storage_source": "SHELF_STORAGE_3",
+  "return_stack": "STACK_1",
+  "priority": 10
+}
+```
+
+좌표까지 서버가 함께 주는 형태:
+
+```json
+{
+  "task_id": "job_0001",
+  "type": "replace_stack_shelf",
+  "robot_id": "auto",
+  "source_stack": {
+    "name": "STACK_1",
+    "pose": [-12.8, 9.0, 0.0]
+  },
+  "unload_target": {
+    "name": "UNLOAD_2",
+    "pose": [4.0, -3.0, 0.0]
+  },
+  "storage_source": {
+    "name": "SHELF_STORAGE_3",
+    "pose": [0.0, 0.0, 0.0]
+  },
+  "return_stack": {
+    "name": "STACK_1",
+    "pose": [-12.8, 9.0, 0.0]
+  },
+  "priority": 10
+}
+```
+
+초기에는 이름 기반 task로 시작하고, 이후 서버가 실시간 좌표를 주면 pose 기반으로 확장한다.
+
+### 실행 phase
+
+현재 `robot1_stack_sequence.py`는 `STACK -> UNLOAD -> WAIT`까지 수행한다. `replace_stack_shelf`는 여기에 `SHELF_STORAGE -> STACK` 후반부를 추가하는 행동이다.
+
+권장 phase:
+
+```text
+IDLE
+  -> TASK_ACCEPTED
+  -> MOVE_TO_SOURCE_STACK
+  -> LIFT_UP_SOURCE_STACK
+  -> MOVE_TO_UNLOAD
+  -> LIFT_DOWN_UNLOAD
+  -> BACK_OUT_UNLOAD
+  -> MOVE_TO_STORAGE
+  -> LIFT_UP_STORAGE
+  -> MOVE_TO_RETURN_STACK
+  -> LIFT_DOWN_RETURN_STACK
+  -> MOVE_TO_WAIT
+  -> REPORT_DONE
+  -> IDLE
+```
+
+서버 연결 전 MVP에서는 `IDLE`과 task queue 없이 고정 인자 기반으로 먼저 검증해도 된다.
+
+```text
+MOVE_TO_STACK
+  -> LIFT_UP
+  -> MOVE_TO_UNLOAD_1
+  -> SETTLE_AT_UNLOAD
+  -> LIFT_DOWN
+  -> BACK_OUT_FROM_UNLOAD
+  -> MOVE_TO_SHELF_STORAGE
+  -> LIFT_UP_AT_STORAGE
+  -> MOVE_TO_RETURN_STACK
+  -> LIFT_DOWN_AT_RETURN_STACK
+  -> MOVE_TO_WAIT_1
+  -> COMPLETE
+```
+
+### 현재 코드에서 연결되는 부분
+
+주요 파일:
+
+- `smart_factory/robot1_stack_sequence.py`
+  - 기존 sequence 상태 머신이 있는 곳.
+  - 현재 `SHELF_STORAGE` 관련 phase가 주석 처리되어 있으므로 다시 살리거나 새 phase를 추가한다.
+  - 기존 `_step_move(target_name)`를 그대로 재사용할 수 있다.
+
+- `smart_factory/axis_nav_to_place.py`
+  - `STACK`, `UNLOAD`, `SHELF_STORAGE`, `WAIT` 좌표가 있는 곳.
+  - `STACK_1`, `UNLOAD_2`, `SHELF_STORAGE_3` 같은 이름은 여기의 `PLACE_CANDIDATES`에서 생성된다.
+
+현재 좌표:
+
+```python
+"WAIT": [(-8.0, -14.0), (-9.0, -14.0), (-10.0, -14.0)]
+"STACK": [(-12.8, 9.0), (-8.2, 1.5), (-9.7, -8.9)]
+"SHELF_STORAGE": [(0.0, -10.0), (0.0, 10.0), (0.0, 0.0)]
+"UNLOAD": [(4.0, -13.0), (4.0, -3.0), (4.0, 7.0)]
+```
+
+따라서 예시 작업은 내부적으로 다음 좌표를 쓴다.
+
+```text
+STACK_1          = (-12.8, 9.0)
+UNLOAD_2         = (4.0, -3.0)
+SHELF_STORAGE_3  = (0.0, 0.0)
+STACK_1          = (-12.8, 9.0)
+```
+
+### 코드 흐름 이미지
+
+구현상 핵심은 다음 호출 흐름이다.
+
+```python
+_step_move("STACK_1")
+_publish_lift(lift_up_position)
+
+_step_move("UNLOAD_2")
+_publish_lift(lift_down_position)
+
+_step_move("SHELF_STORAGE_3")
+_publish_lift(lift_up_position)
+
+_step_move("STACK_1")
+_publish_lift(lift_down_position)
+```
+
+### 서버 연결 전 테스트 방식
+
+처음에는 argparse 기반으로 고정 행동을 실행해 검증한다.
+
+```bash
+ros2 run smart_factory robot1_stack_sequence -- \
+  --stack-target STACK_1 \
+  --unload-target UNLOAD_2 \
+  --shelf-storage-target SHELF_STORAGE_3 \
+  --wait-target WAIT_1
+```
+
+단, 현재 코드는 `UNLOAD` 이후 바로 `WAIT`으로 가도록 되어 있으므로, 위 인자가 실제로 의미를 가지려면 `robot1_stack_sequence.py`에서 후반 phase를 추가해야 한다.
+
+서버 연결 후에는 같은 행동을 `/smart_factory/task_request` JSON으로 실행한다.
+
+```bash
+ros2 topic pub /smart_factory/task_request std_msgs/msg/String \
+"{data: '{\"task_id\":\"job_0001\",\"type\":\"replace_stack_shelf\",\"robot_id\":\"auto\",\"source_stack\":\"STACK_1\",\"unload_target\":\"UNLOAD_2\",\"storage_source\":\"SHELF_STORAGE_3\",\"return_stack\":\"STACK_1\",\"priority\":10}'}"
+```
+
+### 상태 업데이트 규칙
+
+이 행동이 성공하면 task_manager는 내부 상태를 다음처럼 바꿔야 한다.
+
+```text
+작업 전:
+  STACK_1 occupied
+  UNLOAD_2 empty
+  SHELF_STORAGE_3 occupied_empty_shelf
+
+중간:
+  STACK_1 reserved/empty
+  UNLOAD_2 occupied
+  SHELF_STORAGE_3 reserved
+
+작업 후:
+  STACK_1 occupied_empty_shelf
+  UNLOAD_2 occupied_loaded_shelf
+  SHELF_STORAGE_3 empty
+```
+
+초기 MVP에서는 상태를 엄격히 저장하지 않아도 되지만, 서버 자동화로 넘어가면 중복 assign 방지를 위해 반드시 필요하다.
+
+## 12. 테스트 시나리오
 
 ### 단일 로봇 기본
 
@@ -441,15 +640,38 @@ expected:
   task2 starts after task1 done
 ```
 
-## 12. 주의할 점
+### stack 선반 교체 행동
+
+```text
+task: replace_stack_shelf
+source_stack: STACK_1
+unload_target: UNLOAD_2
+storage_source: SHELF_STORAGE_3
+return_stack: STACK_1
+
+expected:
+  iw_hub moves to STACK_1
+  lift up
+  moves to UNLOAD_2
+  lift down
+  moves to SHELF_STORAGE_3
+  lift up
+  moves back to STACK_1
+  lift down
+  status done
+  executor returns IDLE or COMPLETE
+```
+
+## 13. 주의할 점
 
 - `robot_config.py`의 `POD_STACKS` 좌표와 `axis_nav_to_place.py`의 `STACK` 좌표는 서로 맞아야 한다.
 - `iw_hub_nav2_bringup.launch.py`의 map to odom transform도 spawn pose와 맞아야 한다.
 - executor는 작업 완료 후 반드시 lift를 down 상태로 유지하고 `IDLE`을 publish해야 한다.
 - 서버가 같은 pod/stack을 동시에 두 번 assign하지 않도록 task_manager에서 reservation이 필요하다.
+- `replace_stack_shelf`는 source stack, unload target, storage source, return stack 네 장소를 모두 reserve해야 한다.
 - 처음부터 서버까지 붙이지 말고 ROS2 topic JSON으로 먼저 검증한다.
 
-## 13. MVP 완료 기준
+## 14. MVP 완료 기준
 
 다음이 되면 1차 목표 완료로 본다.
 
@@ -467,4 +689,3 @@ expected:
 ```
 
 이 상태까지 만들면 이후 서버 통합은 bridge 문제로 분리할 수 있다.
-
