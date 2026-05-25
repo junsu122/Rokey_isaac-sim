@@ -1,0 +1,4 @@
+[console_scripts]
+axis_nav = iw_hub_movement.axis_nav:main
+move_to_point = iw_hub_movement.move_to_point:main
+
