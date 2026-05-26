@@ -1,0 +1,10 @@
+# ROS2 colcon build artifacts
+build/
+install/
+log/
+
+# Isaac Sim / Kit cache
+.cache/
+__pycache__/
+*.pyc
+*.pyo
