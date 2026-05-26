@@ -1,0 +1,49 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - img [ref=e6]:
+        - generic [ref=e7]: amaezon
+      - generic [ref=e10]:
+        - generic [ref=e11]: 물류센터
+        - generic [ref=e12]: 인천 물류허브
+      - generic [ref=e13]:
+        - generic [ref=e14]: 전체
+        - generic [ref=e15]: 섹션 / 로봇 / Pod 검색...
+        - img [ref=e17]
+      - generic [ref=e19]:
+        - generic [ref=e20] [cursor=pointer]:
+          - generic [ref=e21]: 안녕하세요
+          - generic [ref=e22]: 관리자 ▾
+        - generic [ref=e23] [cursor=pointer]:
+          - generic [ref=e24]: 로봇 상태
+          - generic [ref=e25]: 모니터링 ▾
+    - generic [ref=e26]:
+      - generic [ref=e27] [cursor=pointer]: 전체 현황
+      - generic [ref=e28] [cursor=pointer]: 섹션 관리
+      - generic [ref=e29] [cursor=pointer]: Pod 현황
+      - generic [ref=e30] [cursor=pointer]: 로봇 제어
+      - generic [ref=e31]: ● LIVE 오전 2:18:39
+  - main [ref=e32]:
+    - generic [ref=e35]: Firebase 연결 중...
+    - generic [ref=e37]:
+      - generic [ref=e38]:
+        - generic [ref=e39]: Pod 상태
+        - generic [ref=e40]:
+          - button "Section A" [ref=e41] [cursor=pointer]
+          - button "Section B" [ref=e42] [cursor=pointer]
+          - button "Section C" [ref=e43] [cursor=pointer]
+        - generic [ref=e44]:
+          - generic [ref=e45]:
+            - text: "가득:"
+            - strong [ref=e46]: "0"
+          - generic [ref=e47]:
+            - text: "채우는 중:"
+            - strong [ref=e48]: "0"
+          - generic [ref=e49]:
+            - text: "이동 중:"
+            - strong [ref=e50]: "0"
+          - generic [ref=e51]:
+            - text: "비어있음:"
+            - strong [ref=e52]: "0"
+      - paragraph [ref=e54]: Pod 데이터 없음
+  - contentinfo [ref=e55]: © 2026 Amaezon Robotics Logistics — Powered by Firebase & ROS2
