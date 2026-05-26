@@ -115,13 +115,13 @@ POD_STACKS = [
     {"name": "PodStack_04", "usd": _POD_USD, "xyz": ( 12.0, 14.0, 0.0), "yaw": 0.0},  # 드론 배달 목적지
 ]
 
-# ── Section Pod Stacks (A / B / C  4×5 격자) ─────────────────────────
+# ── Section Pod Stacks (A / B / C  3×4 슬롯) ─────────────────────────
 SECTION_POD_USD = _POD_USD
 
 
 def _make_grid(cx: float, cy: float,
-               cols: int = 4, rows: int = 5,
-               dx: float = 1.8, dy: float = 1.5,
+               cols: int = 3, rows: int = 4,
+               dx: float = 2.8, dy: float = 2.0,
                z: float = 0.0) -> list:
     xs = [cx + (c - (cols - 1) / 2.0) * dx for c in range(cols)]
     ys = [cy + (r - (rows - 1) / 2.0) * dy for r in range(rows)]
@@ -129,9 +129,9 @@ def _make_grid(cx: float, cy: float,
 
 
 SECTION_PODS = {
-    "A": _make_grid(0.0,  10.0),   # Sec A (gangnam)   y=[7.0..13.0]
-    "B": _make_grid(0.0,   0.0),   # Sec B (gangseo)   y=[-3.0..3.0]
-    "C": _make_grid(0.0, -10.0),   # Sec C (gyeonggi)  y=[-13.0..-7.0]
+    "A": _make_grid(0.0,  10.0),   # Sec A: slot01=(-2.8,  7.0), reserved empty
+    "B": _make_grid(0.0,  -0.2),   # Sec B: slot01=(-2.8, -3.2), reserved empty
+    "C": _make_grid(0.0, -10.0),   # Sec C: slot01=(-2.8,-13.0), reserved empty
 }
 
 ROBOT_REGISTRY = [
@@ -150,9 +150,9 @@ ROBOT_REGISTRY = [
     },
 
     # ── Spot #1 — Section A+B 순찰 (A와 B 사이 시작) ─────────────────────
-    # 경로: x=±4.5 (pod x범위 ±3.1보다 1.4m 바깥),
+    # 경로: x=±4.5 (pod x범위 ±2.8보다 1.7m 바깥),
     #       y=14.5 (SecA 최상단 pod y=13.0보다 1.5m 위),
-    #       y=-4.5 (SecB 최하단 pod y=-3.0보다 1.5m 아래)
+    #       y=-4.7 (SecB 최하단 pod y=-3.2보다 1.5m 아래)
     {
         "type"      : "spot",
         "name"      : "Spot_01",
@@ -164,20 +164,20 @@ ROBOT_REGISTRY = [
             ( 0.0, 14.5),
             (-4.5, 14.5),
             (-4.5,  5.0),
-            (-4.5, -4.5),
-            ( 0.0, -4.5),
-            ( 4.5, -4.5),
+            (-4.5, -4.7),
+            ( 0.0, -4.7),
+            ( 4.5, -4.7),
         ],
         "aruco_goals": {
-            0: (-3.0,  14.5),
+            0: (-2.8,  14.5),
             1: ( 0.0,  14.5),
-            2: ( 3.0,  14.5),
+            2: ( 2.8,  14.5),
         },
     },
 
     # ── Spot #2 — Section B+C 순찰 (B와 C 사이 시작) ─────────────────────
-    # 경로: x=±4.5 (pod x범위 ±3.1보다 1.4m 바깥),
-    #       y=4.5  (SecB 최상단 pod y=3.0보다 1.5m 위),
+    # 경로: x=±4.5 (pod x범위 ±2.8보다 1.7m 바깥),
+    #       y=4.3  (SecB 최상단 pod y=2.8보다 1.5m 위),
     #       y=-14.5 (SecC 최하단 pod y=-13.0보다 1.5m 아래)
     {
         "type"      : "spot",
@@ -185,19 +185,19 @@ ROBOT_REGISTRY = [
         "spawn_xyz" : ( 0.0, -5.5, 0.7),
         "spawn_yaw" : 0.0,
         "waypoints": [
-            ( 4.5, -4.5),
+            ( 4.5, -4.7),
             ( 4.5,-14.5),
             ( 0.0,-14.5),
             (-4.5,-14.5),
-            (-4.5, -4.5),
-            (-4.5,  4.5),
-            ( 0.0,  4.5),
-            ( 4.5,  4.5),
+            (-4.5, -4.7),
+            (-4.5,  4.3),
+            ( 0.0,  4.3),
+            ( 4.5,  4.3),
         ],
         "aruco_goals": {
-            0: (-3.0, -14.5),
+            0: (-2.8, -14.5),
             1: ( 0.0, -14.5),
-            2: ( 3.0, -14.5),
+            2: ( 2.8, -14.5),
         },
     },
 
@@ -205,8 +205,8 @@ ROBOT_REGISTRY = [
     {
         "type"            : "iw_hub",
         "name"            : "iw_hub_01",
-        "spawn_xyz"       : (-12.8, 9.0, 0.0),   # PodStack_01 위치 (원래대로)
-        "spawn_yaw"       : 0.0,
+        "spawn_xyz"       : (-12.8, 9.2, -0.14),   # PodStack_01 위치 (원래대로)
+        "spawn_yaw"       : 90.0,
         "section"         : "A",
         "complete_topic"  : "/m0609_A/work",
         "complete_signal" : "A_complete",
@@ -215,7 +215,8 @@ ROBOT_REGISTRY = [
 
     # ── IW Hub #2 ─ 픽업 모드: 포드스택 집어 Section B 슬롯으로 배달 ────────
     # 흐름: spawn(-6.45,1.5) → 트리거 → X이동→pickup(-7.9,1.5) → 리프트업
-    #        → 통로(-4.5,1.5) → Y이동→X이동 → 슬롯 → 리프트다운 → 복귀
+    #        → 통로(-6.0,1.5) → Y이동→X이동 → 슬롯01 → 리프트다운
+    #        → 후진 이탈 → 다음 섹션 pod 픽업 → conveyor 옆 pickup 위치로 복귀
     {
         "type"            : "iw_hub",
         "name"            : "iw_hub_02",
@@ -234,8 +235,8 @@ ROBOT_REGISTRY = [
     {
         "type"            : "iw_hub",
         "name"            : "iw_hub_03",
-        "spawn_xyz"       : (-9.1, -8.87, -0.14),   # PodStack_03(-9.7,-8.9) 에서 +x 1.4m
-        "spawn_yaw"       : 0.0,
+        "spawn_xyz"       : (-9.7, -8.6, -0.14),   # PodStack_03(-9.7,-8.9) 에서 +x 1.4m
+        "spawn_yaw"       : 90,
         "section"         : "C",
         "complete_topic"  : "/m0609_C/work",
         "complete_signal" : "C_complete",

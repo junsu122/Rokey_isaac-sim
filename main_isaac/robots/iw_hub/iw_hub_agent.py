@@ -60,7 +60,7 @@ def _get_ros2_node():
     return _ros2_node
 
 _SENSORS_REL  = "iw_hub_sensors"
-_CORRIDOR_XY  = (-4.5, 1.5)   # 공급지 ↔ 섹션 통로 경유점
+_CORRIDOR_XY  = (-6.0, 1.5)   # 픽업 복귀 후 섹션 진입 중간점
 
 
 def _set_rel_targets(stage, prim_path: str, rel_name: str, targets: list):
@@ -199,6 +199,7 @@ class IwHubAgent(BaseRobotAgent):
     KP_W            = 2.5     # 회전 P게인
     PUB_EVERY       = 10      # cmd_vel 발행 주기 (physics step 수)
     COMPLETE_NEEDED = 3       # 출발 조건: complete 신호 횟수
+    DOCK_TOL        = 0.06    # pod place/pick 시 정밀 정렬 허용 오차 [m]
 
     # ── setup ────────────────────────────────────────────────────────
     def setup(self) -> None:
@@ -262,13 +263,15 @@ class IwHubAgent(BaseRobotAgent):
         self._mode = self.cfg.get("mode", "standard")
 
         if self._mode == "pickup":
-            # pickup 모드: 포드스택 → 리프트업 → 180°회전 → 슬롯 배달
+            # pickup 모드: 포드스택 → 리프트업 → 중간점 → 슬롯 배달
             px, py = self.cfg.get("pickup_xyz", (0.0, 0.0))[:2]
             self._pickup_xy      = (float(px), float(py))
             self._pickup_state   = "WAITING"
             self._turn_tgt_yaw   = None
             self._delivery_slots = self._build_delivery_slots()
             self._delivery_idx   = 0
+            self._backout_x      = float(_CORRIDOR_XY[0])
+            self._dock_target    = None
             self.mission_state   = -1   # pickup 모드에서는 표준 FSM 미사용
         else:
             self.mission_state   = 0    # 0=WAITING
@@ -496,15 +499,60 @@ class IwHubAgent(BaseRobotAgent):
         return False
 
     def _nav_to(self, tx: float, ty: float) -> bool:
-        """단일 웨이포인트 이동. 헤딩 정렬 → 직진 순서. 도착 시 True."""
+        """단일 웨이포인트 이동. 가까운 뒤쪽 목표는 180도 회전 대신 후진."""
         x, y, hdg = self._get_xy_hdg()
         dx, dy    = tx - x, ty - y
         dist      = math.hypot(dx, dy)
         if dist <= self.NAV_TOL:
             self._publish_cmd_vel(0.0, 0.0)
             return True
-        err_hdg = self._angle_err(math.atan2(dy, dx), hdg)
-        lv = 0.0 if abs(err_hdg) > 0.5 else self.MAX_V * min(1.0, dist / 1.5)
+
+        target_hdg = math.atan2(dy, dx)
+        fwd_err = self._angle_err(target_hdg, hdg)
+        rev_err = self._angle_err(target_hdg + math.pi, hdg)
+        use_reverse = abs(fwd_err) > 2.2 and abs(rev_err) < 0.5
+
+        err_hdg = rev_err if use_reverse else fwd_err
+        speed = self.MAX_V * min(1.0, dist / 1.5)
+        if use_reverse:
+            speed *= -0.6
+        lv = 0.0 if abs(err_hdg) > 0.5 else speed
+        av = max(-self.MAX_W, min(self.MAX_W, self.KP_W * err_hdg))
+        self._publish_cmd_vel(lv, av)
+        return False
+
+    def _drive_axis_to(self, tx: float, ty: float, axis: str) -> bool:
+        """Move on one axis only, choosing forward or reverse with the smaller yaw change.
+
+        On exact 90-degree ties, prefer the positive yaw turn and drive backward.
+        That avoids the repeated negative-yaw spin seen when going to the first slot.
+        """
+        x, y, hdg = self._get_xy_hdg()
+        if axis == "x":
+            delta = tx - x
+            forward_yaw = 0.0 if delta >= 0.0 else math.pi
+            reverse_yaw = math.pi if delta >= 0.0 else 0.0
+        else:
+            delta = ty - y
+            forward_yaw = math.pi / 2.0 if delta >= 0.0 else -math.pi / 2.0
+            reverse_yaw = -math.pi / 2.0 if delta >= 0.0 else math.pi / 2.0
+
+        if abs(delta) <= self.NAV_TOL:
+            self._publish_cmd_vel(0.0, 0.0)
+            return True
+
+        fwd_err = self._angle_err(forward_yaw, hdg)
+        rev_err = self._angle_err(reverse_yaw, hdg)
+        use_reverse = (
+            abs(rev_err) < abs(fwd_err) - 1e-3 or
+            abs(abs(rev_err) - abs(fwd_err)) <= 1e-3 and rev_err > fwd_err
+        )
+        err_hdg = rev_err if use_reverse else fwd_err
+        lv = self.MAX_V * 0.6 * min(1.0, abs(delta) / 1.0)
+        if use_reverse:
+            lv = -lv
+        if abs(err_hdg) > 0.5:
+            lv = 0.0
         av = max(-self.MAX_W, min(self.MAX_W, self.KP_W * err_hdg))
         self._publish_cmd_vel(lv, av)
         return False
@@ -548,19 +596,87 @@ class IwHubAgent(BaseRobotAgent):
         positions = SECTION_PODS.get(self._section_name, [])
         return [(float(p[0]), float(p[1])) for p in positions]
 
+    def _slot_aisle_x(self, slot_x: float) -> float:
+        """Target slot 옆의 통로 x. 마지막 docking 전까지 pod 중심선 이동을 피한다."""
+        if slot_x < 0.0:
+            return slot_x - 1.4
+        if slot_x > 0.0:
+            return slot_x - 1.4
+        return slot_x - 1.4
+
+    def _approach_section_slot(self, tx: float, ty: float, yfirst: bool = True) -> bool:
+        """Move through an aisle, then dock exactly into the requested slot."""
+        aisle_x = self._slot_aisle_x(tx)
+        x, y, _ = self._get_xy_hdg()
+
+        if yfirst:
+            if abs(y - ty) > self.NAV_TOL:
+                return self._drive_axis_to(x, ty, "y")
+            if abs(x - aisle_x) > self.NAV_TOL:
+                return self._drive_axis_to(aisle_x, ty, "x")
+        else:
+            if abs(x - aisle_x) > self.NAV_TOL:
+                return self._drive_axis_to(aisle_x, y, "x")
+            if abs(y - ty) > self.NAV_TOL:
+                return self._drive_axis_to(aisle_x, ty, "y")
+
+        old_tol = self.NAV_TOL
+        self.NAV_TOL = self.DOCK_TOL
+        try:
+            x, y, _ = self._get_xy_hdg()
+            if abs(y - ty) > self.NAV_TOL:
+                return self._drive_axis_to(aisle_x, ty, "y")
+            return self._dock_x_into_slot(tx, ty)
+        finally:
+            self.NAV_TOL = old_tol
+
+    def _dock_x_into_slot(self, tx: float, ty: float) -> bool:
+        """Final pod docking: keep the current X heading and drive straight in."""
+        x, y, hdg = self._get_xy_hdg()
+        if abs(y - ty) > self.DOCK_TOL:
+            return self._drive_axis_to(x, ty, "y")
+
+        dx = tx - x
+        if abs(dx) <= self.DOCK_TOL:
+            self._publish_cmd_vel(0.0, 0.0)
+            return True
+
+        east_err = abs(self._angle_err(0.0, hdg))
+        west_err = abs(self._angle_err(math.pi, hdg))
+        if east_err > 0.25 and west_err > 0.25:
+            target_yaw = 0.0 if east_err <= west_err else math.pi
+            yaw_err = self._angle_err(target_yaw, hdg)
+            av = max(-self.MAX_W, min(self.MAX_W, self.KP_W * yaw_err))
+            self._publish_cmd_vel(0.0, av)
+            return False
+
+        facing_east = east_err <= west_err
+        forward_is_plus_x = facing_east
+        need_plus_x = dx > 0.0
+
+        lv = min(0.25, max(0.06, abs(dx) * 0.6))
+        if need_plus_x != forward_is_plus_x:
+            lv = -lv
+        if abs(lv) < 0.06:
+            lv = 0.06 if lv >= 0.0 else -0.06
+        target_yaw = 0.0 if facing_east else math.pi
+        yaw_err = self._angle_err(target_yaw, hdg)
+        self._publish_cmd_vel(lv, max(-0.15, min(0.15, self.KP_W * yaw_err)))
+        return False
+
     def _nav_axis_aligned(self, tx: float, ty: float, yfirst: bool = False) -> bool:
         """축 정렬 이동 (대각선 금지). yfirst=True 이면 Y→X, 기본은 X→Y. 도착 시 True."""
         x, y, _ = self._get_xy_hdg()
         if yfirst:
             if abs(ty - y) > self.NAV_TOL:
-                return self._nav_to(x, ty)
+                return self._drive_axis_to(x, ty, "y")
             if abs(tx - x) > self.NAV_TOL:
-                return self._nav_to(tx, ty)
+                return self._drive_axis_to(tx, ty, "x")
         else:
             if abs(tx - x) > self.NAV_TOL:
-                return self._nav_to(tx, y)
+                return self._drive_axis_to(tx, y, "x")
             if abs(ty - y) > self.NAV_TOL:
-                return self._nav_to(tx, ty)
+                return self._drive_axis_to(tx, ty, "y")
         self._publish_cmd_vel(0.0, 0.0)
         return True
 
@@ -573,6 +689,11 @@ class IwHubAgent(BaseRobotAgent):
             return True
         self._publish_cmd_vel(0.0, max(-self.MAX_W, min(self.MAX_W, self.KP_W * err)))
         return False
+
+    def _drive_along_x(self, tx: float) -> bool:
+        """X축 이동 전용 래퍼."""
+        _, y, _ = self._get_xy_hdg()
+        return self._drive_axis_to(tx, y, "x")
 
     def _run_lift_phase(self, up: bool) -> bool:
         """리프트 올리기(up=True) 또는 내리기(up=False) 시퀀스. 완료 시 True."""
@@ -587,23 +708,24 @@ class IwHubAgent(BaseRobotAgent):
         return self._delivery_slots[self._delivery_idx % len(self._delivery_slots)]
 
     # ── 픽업 모드 FSM ────────────────────────────────────────────────
-    # 시나리오:
-    #   spawn(-6.45,1.5) → GOTO_PICKUP(-7.9,1.5) → LIFTING
-    #   → GOTO_CORRIDOR(-4.5,1.5) → GOTO_SLOT(empty slot, Y-first) → LOWERING
-    #   → RETURN_CORRIDOR(-4.5,1.5) → GOTO_NEXT_POD(next slot, Y-first) → LIFTING2
-    #   → GOTO_CORR2(-4.5,1.5) → GOTO_SUPPLY(-7.9,1.5) → LOWERING2 → RETREAT → WAITING
+    # 시나리오 (X or Y 한 축씩 이동, 불필요한 180° 회전 없음):
+    #   spawn(-6.45,1.5) → GOTO_PICKUP(-7.9,1.5) [X축 후진]
+    #   → LIFTING → GOTO_INTERM(-6.0,1.5) [X축 전진/후진]
+    #   → GOTO_SLOT(slot01, Y-first) → LOWERING
+    #   → BACKOUT_DROP → GOTO_NEXT_POD → LIFTING_OUT
+    #   → BACKOUT_PICK → GOTO_CORR_RETURN → GOTO_SUPPLY → LOWERING_OUT
+    #   → RETREAT → WAITING
     def _run_pickup_fsm(self) -> None:
-        cnt    = self._get_signal_count()
-        px, py = self._pickup_xy   # (-7.9, 1.5)
-        cx, cy = _CORRIDOR_XY      # (-4.5, 1.5)
+        cnt       = self._get_signal_count()
+        px, py    = self._pickup_xy      # (-7.9, 1.5)
+        cx, cy    = _CORRIDOR_XY         # (-6.0, 1.5)
 
         if self._pickup_state == "WAITING":
             self._fsm_step += 1
             if self._fsm_step % 100 == 0:
                 x, y, _ = self._get_xy_hdg()
                 print(f"[{self.name}] WAITING  신호={cnt}/{self._complete_needed}  "
-                      f"pos=({x:.2f},{y:.2f})  "
-                      f"art={'OK' if self._articulation else 'None'}")
+                      f"pos=({x:.2f},{y:.2f})")
             if cnt >= self._complete_needed:
                 self._reset_signal_count()
                 self._pickup_state = "GOTO_PICKUP"
@@ -611,26 +733,31 @@ class IwHubAgent(BaseRobotAgent):
                 print(f"[{self.name}] WAITING → GOTO_PICKUP  pickup={self._pickup_xy}")
 
         elif self._pickup_state == "GOTO_PICKUP":
-            if self._nav_axis_aligned(px, py):
+            # X축만 이동. 동향이면 후진, 서향이면 전진 (180° 회전 불필요)
+            if self._drive_along_x(px):
                 self._pickup_state = "LIFTING"
                 self._fsm_step     = 0
                 print(f"[{self.name}] GOTO_PICKUP → LIFTING")
 
         elif self._pickup_state == "LIFTING":
             if self._run_lift_phase(up=True):
-                self._pickup_state = "GOTO_CORRIDOR"
+                self._pickup_state = "GOTO_INTERM"
                 self._fsm_step     = 0
-                print(f"[{self.name}] LIFTING → GOTO_CORRIDOR  corridor={_CORRIDOR_XY}")
+                print(f"[{self.name}] LIFTING → GOTO_INTERM  interm={_CORRIDOR_XY}")
 
-        elif self._pickup_state == "GOTO_CORRIDOR":
-            if self._nav_axis_aligned(cx, cy):
+        elif self._pickup_state == "GOTO_INTERM":
+            # X축만 이동. 동향이면 전진, 서향이면 후진 (180° 회전 불필요)
+            if self._drive_along_x(cx):
                 self._pickup_state = "GOTO_SLOT"
                 self._fsm_step     = 0
-                print(f"[{self.name}] GOTO_CORRIDOR → GOTO_SLOT  slot={self._get_next_delivery_slot()}")
+                print(f"[{self.name}] GOTO_INTERM → GOTO_SLOT  slot={self._get_next_delivery_slot()}")
 
         elif self._pickup_state == "GOTO_SLOT":
             tx, ty = self._get_next_delivery_slot()
-            if self._nav_axis_aligned(tx, ty, yfirst=True):
+            if self._approach_section_slot(tx, ty, yfirst=True):
+                # 드롭 위치에서 2m 후진할 목표 X 저장
+                self._backout_x    = self._slot_aisle_x(tx)
+                self._dock_target  = (tx, ty)
                 self._pickup_state = "LOWERING"
                 self._fsm_step     = 0
                 print(f"[{self.name}] GOTO_SLOT → LOWERING  at=({tx:.2f},{ty:.2f})")
@@ -638,57 +765,66 @@ class IwHubAgent(BaseRobotAgent):
         elif self._pickup_state == "LOWERING":
             if self._run_lift_phase(up=False):
                 self._drop_idx    += 1
-                # 인바운드 배달 완료 → delivery_idx 를 다음 슬롯(아웃바운드 픽업 대상)으로 진행
                 self._delivery_idx = (self._delivery_idx + 1) % max(1, len(self._delivery_slots))
-                self._pickup_state = "RETURN_CORRIDOR"
+                self._pickup_state = "BACKOUT_DROP"
                 self._fsm_step     = 0
-                print(f"[{self.name}] LOWERING → RETURN_CORRIDOR  (배달 #{self._drop_idx})")
+                print(f"[{self.name}] LOWERING → BACKOUT_DROP  "
+                      f"target_x={self._backout_x:.2f}  (배달 #{self._drop_idx})")
 
-        elif self._pickup_state == "RETURN_CORRIDOR":
-            if self._nav_axis_aligned(cx, cy):
+        elif self._pickup_state == "BACKOUT_DROP":
+            # 방금 내려놓은 포드에서 먼저 X축으로 이탈한 뒤 다음 pod 로 접근
+            if self._drive_along_x(self._backout_x):
                 self._pickup_state = "GOTO_NEXT_POD"
                 self._fsm_step     = 0
-                print(f"[{self.name}] RETURN_CORRIDOR → GOTO_NEXT_POD  next={self._get_next_delivery_slot()}")
+                print(f"[{self.name}] BACKOUT_DROP → GOTO_NEXT_POD  "
+                      f"next={self._get_next_delivery_slot()}")
 
         elif self._pickup_state == "GOTO_NEXT_POD":
             tx, ty = self._get_next_delivery_slot()
-            if self._nav_axis_aligned(tx, ty, yfirst=True):
-                self._pickup_state = "LIFTING2"
+            if self._approach_section_slot(tx, ty, yfirst=True):
+                self._backout_x    = self._slot_aisle_x(tx)
+                self._dock_target  = (tx, ty)
+                self._pickup_state = "LIFTING_OUT"
                 self._fsm_step     = 0
-                print(f"[{self.name}] GOTO_NEXT_POD → LIFTING2  at=({tx:.2f},{ty:.2f})")
+                print(f"[{self.name}] GOTO_NEXT_POD → LIFTING_OUT  at=({tx:.2f},{ty:.2f})")
 
-        elif self._pickup_state == "LIFTING2":
+        elif self._pickup_state == "LIFTING_OUT":
             if self._run_lift_phase(up=True):
-                self._pickup_state = "GOTO_CORR2"
+                self._pickup_state = "BACKOUT_PICK"
                 self._fsm_step     = 0
-                print(f"[{self.name}] LIFTING2 → GOTO_CORR2")
+                print(f"[{self.name}] LIFTING_OUT → BACKOUT_PICK  target_x={self._backout_x:.2f}")
 
-        elif self._pickup_state == "GOTO_CORR2":
-            if self._nav_axis_aligned(cx, cy):
+        elif self._pickup_state == "BACKOUT_PICK":
+            if self._drive_along_x(self._backout_x):
+                self._pickup_state = "GOTO_CORR_RETURN"
+                self._fsm_step     = 0
+                print(f"[{self.name}] BACKOUT_PICK → GOTO_CORR_RETURN  corridor={_CORRIDOR_XY}")
+
+        elif self._pickup_state == "GOTO_CORR_RETURN":
+            if self._nav_axis_aligned(cx, cy, yfirst=True):
                 self._pickup_state = "GOTO_SUPPLY"
                 self._fsm_step     = 0
-                print(f"[{self.name}] GOTO_CORR2 → GOTO_SUPPLY  supply={self._pickup_xy}")
+                print(f"[{self.name}] GOTO_CORR_RETURN → GOTO_SUPPLY  supply={self._pickup_xy}")
 
         elif self._pickup_state == "GOTO_SUPPLY":
             if self._nav_axis_aligned(px, py):
-                self._pickup_state = "LOWERING2"
+                self._pickup_state = "LOWERING_OUT"
                 self._fsm_step     = 0
-                print(f"[{self.name}] GOTO_SUPPLY → LOWERING2")
+                print(f"[{self.name}] GOTO_SUPPLY → LOWERING_OUT")
 
-        elif self._pickup_state == "LOWERING2":
+        elif self._pickup_state == "LOWERING_OUT":
             if self._run_lift_phase(up=False):
-                # 아웃바운드 복귀 완료 → 다음 사이클용 슬롯으로 진행
                 self._delivery_idx = (self._delivery_idx + 1) % max(1, len(self._delivery_slots))
                 self._pickup_state = "RETREAT"
                 self._fsm_step     = 0
-                print(f"[{self.name}] LOWERING2 → RETREAT")
+                print(f"[{self.name}] LOWERING_OUT → RETREAT")
 
         elif self._pickup_state == "RETREAT":
             hx, hy = self._home_xy
             if self._nav_axis_aligned(hx, hy):
                 self._pickup_state = "WAITING"
                 self._fsm_step     = 0
-                print(f"[{self.name}] RETREAT → WAITING  (사이클 완료 #{self._drop_idx})")
+                print(f"[{self.name}] RETREAT → WAITING  (cycle #{self._drop_idx})")
 
     # ── 표준 모드 FSM ────────────────────────────────────────────────
     # 상태:

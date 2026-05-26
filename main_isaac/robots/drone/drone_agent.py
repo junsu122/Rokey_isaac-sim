@@ -65,15 +65,17 @@ _MS_DESCEND_PICK = "DESCEND_PICK"
 _MS_GRAB         = "GRAB"
 _MS_ASCEND_PICK  = "ASCEND_PICK"
 _MS_FLY_DROP     = "FLY_DROP"
+_MS_DESCEND_DROP = "DESCEND_DROP"
 _MS_RELEASE      = "RELEASE"
 _MS_REASCEND     = "REASCEND"   # 배달 후 다음 픽업 전 고도 회복
 _MS_DONE         = "DONE"
 
-_HOVER_ALT        = 2.5    # 순항 고도 [m]
+_HOVER_ALT        = 2.5    # 순항 고도 [m] — ceiling 충돌 방지용 고정 미션 고도
 _GRAB_ALT         = 1.5    # 그랩 시 드론 고도 [m] — 섹션 박스(케이지 내부 z≈0.91m) 위 호버링
+_DROP_ALT         = 1.5    # 배달지 릴리즈 고도 [m] — 순항 고도에서 떨어뜨리지 않고 내려놓기
 _NAV_TOL_XY       = 0.5    # 수평 도착 허용 오차 [m]
 _NAV_TOL_Z        = 0.25   # 수직 도착 허용 오차 [m]
-_ALT_GATE         = 0.05   # 수직→수평 전환 고도 허용 오차 [m] — 2.5m ±5cm 이내에서만 수평 이동 허가
+_ALT_GATE         = 0.15   # 수직→수평 전환 고도 허용 오차 [m] — 넓혀서 고도 진동 시 재진입 방지
 _GRAB_WAIT        = 40     # 그랩 위치 안정화 대기 (physics steps)
 _DESCEND_TIMEOUT  = 3000   # DESCEND_PICK 최대 대기 steps (~6s@500Hz) — 타임아웃 시 스킵
 
@@ -315,10 +317,10 @@ class DroneAgent(BaseRobotAgent):
     # ── 미션 헬퍼 ─────────────────────────────────────────────────────
 
     def _build_mission_queue(self, section_targets: dict) -> list:
-        """섹션 박스 인덱스(1~11) → 섹션 슬롯(10~20) 매핑으로 미션 타겟 생성.
+        """섹션 박스 인덱스(1~3) → 섹션 슬롯(10~12) 매핑으로 미션 타겟 생성.
 
         section_targets 예: {"A": 2, "B": 3, "C": 1}
-          인덱스 N (1~11) → 슬롯 (9+N):  1→10, 2→11, …, 11→20
+          인덱스 N (1~3) → 슬롯 (9+N):  1→10, 2→11, 3→12
           prim: /World/SectionBoxes/Sec_{sec}_{slot:02d}
         """
         from robot_config import SECTION_PODS
@@ -326,9 +328,9 @@ class DroneAgent(BaseRobotAgent):
         for sec, box_idx in section_targets.items():
             box_idx = int(box_idx)
             slot = 9 + box_idx          # idx 1→slot10, 2→slot11, …, 11→slot20
-            if not (10 <= slot <= 20):
+            if not (10 <= slot <= 12):
                 carb.log_warn(f"[{self.name}] 섹션 {sec}: 박스 인덱스 {box_idx} 무효 "
-                              f"→ 슬롯 {slot} (유효 범위 1~11)")
+                              f"→ 슬롯 {slot} (유효 범위 1~3)")
                 continue
             positions = SECTION_PODS.get(sec, [])
             pos_idx = slot - 1          # 0-based
@@ -517,16 +519,38 @@ class DroneAgent(BaseRobotAgent):
         elif self._mission_state == _MS_FLY_DROP:
             dx, dy = float(self._delivery_xyz[0]), float(self._delivery_xyz[1])
 
-            # Phase A: 2.5m ±5cm 이내가 될 때까지 XY 고정, Z만 상승
+            # Phase A: hover altitude 도달까지 XY 고정, Z만 상승
             if abs(ctrl.p[2] - _HOVER_ALT) > _ALT_GATE:
                 self._goto(ctrl.p[0], ctrl.p[1], _HOVER_ALT)
+                self._fly_drop_log = getattr(self, "_fly_drop_log", 0) + 1
+                if self._fly_drop_log % 200 == 1:
+                    print(f"[{self.name}] FLY_DROP Phase-A 고도 안정화중  "
+                          f"pos=({ctrl.p[0]:.1f},{ctrl.p[1]:.1f},{ctrl.p[2]:.1f})  "
+                          f"target_alt={_HOVER_ALT:.1f}")
                 return
 
-            # Phase B: 정확히 2.5m 도달 후에만 수평 이동 — Z 고정
+            # Phase B: hover altitude 도달 후 수평 이동
             self._goto(dx, dy, _HOVER_ALT)
+            self._fly_drop_log = getattr(self, "_fly_drop_log", 0) + 1
+            if self._fly_drop_log % 200 == 1:
+                dist = math.hypot(ctrl.p[0] - dx, ctrl.p[1] - dy)
+                print(f"[{self.name}] FLY_DROP Phase-B  "
+                      f"pos=({ctrl.p[0]:.1f},{ctrl.p[1]:.1f},{ctrl.p[2]:.1f})  "
+                      f"→ delivery=({dx:.1f},{dy:.1f})  dist={dist:.1f}m")
             if self._at_xy(dx, dy):
+                self._descend_xy    = (dx, dy)
+                ctrl.integral       = np.zeros(3)
+                self._mission_state = _MS_DESCEND_DROP
+                self._fly_drop_log  = 0
+                print(f"[{self.name}] FLY_DROP → DESCEND_DROP")
+
+        elif self._mission_state == _MS_DESCEND_DROP:
+            dx, dy = self._descend_xy if self._descend_xy else (
+                float(self._delivery_xyz[0]), float(self._delivery_xyz[1]))
+            self._goto(dx, dy, _DROP_ALT)
+            if self._at_xyz(dx, dy, _DROP_ALT):
                 self._mission_state = _MS_RELEASE
-                print(f"[{self.name}] FLY_DROP → RELEASE")
+                print(f"[{self.name}] DESCEND_DROP → RELEASE")
 
         elif self._mission_state == _MS_RELEASE:
             self._release_pod()
