@@ -26,10 +26,10 @@ sections/A
   │
   ├── robots
   │    ├── m0609
-  │    │    └── state    : "working" | "stop"
+  │    │    └── state    : "working" | "wait"
   │    │
   │    └── iw_hub
-  │         ├── state    : "working" | "stop"
+  │         ├── state    : "working" | "wait"
   │         └── location : {x: 0.0, y: 0.0}     ← 현재 좌표 (m)
   │
   └── last_updated   : timestamp
