@@ -1,121 +1,82 @@
-# Warehouse Dashboard
+# UI — 물류센터 모니터링 대시보드
 
-Firebase + React 기반 물류센터 실시간 모니터링 대시보드
+React 19 + TypeScript + Vite + Firebase Realtime 기반 웹 대시보드.
 
----
-
-## 링크
-
-| 항목 | URL |
-|------|-----|
-| **UI (개발 서버)** | http://localhost:5173 |
-| **UI (프리뷰 서버)** | http://localhost:4173 |
-| **Firebase 콘솔** | https://console.firebase.google.com/project/rokey-factory-base |
-| **Firestore 데이터베이스** | https://console.firebase.google.com/project/rokey-factory-base/firestore |
-| **Firebase 프로젝트 설정** | https://console.firebase.google.com/project/rokey-factory-base/settings/general |
-
----
-
-## 시작하기
-
-### 1. 의존성 설치
+## 실행
 
 ```bash
+cd UI
 npm install
+npm run dev       # 개발 서버 (http://localhost:5173)
+npm run build     # 프로덕션 빌드
 ```
 
-### 2. 환경 변수 설정
-
-```bash
-cp .env.example .env.local
-```
-
-`.env.local` 파일을 열어 Firebase 콘솔에서 복사한 값으로 채워주세요.
-
-> **Firebase 콘솔 경로:**  
-> 프로젝트 설정 → 일반 → 내 앱 → 웹 앱 구성 (SDK 설정 및 구성)
-
-```env
-VITE_FIREBASE_API_KEY=...
-VITE_FIREBASE_AUTH_DOMAIN=...
-VITE_FIREBASE_PROJECT_ID=...
-VITE_FIREBASE_STORAGE_BUCKET=...
-VITE_FIREBASE_MESSAGING_SENDER_ID=...
-VITE_FIREBASE_APP_ID=...
-```
-
-### 3. 개발 서버 실행
-
-```bash
-npm run dev
-```
-
-브라우저에서 http://localhost:5173 접속
+`.env.local` 에 Firebase 설정이 있어야 한다.
 
 ---
 
-## 주요 명령어
+## 탭 구성
 
-```bash
-npm run dev      # 개발 서버 실행  →  http://localhost:5173
-npm run build    # 프로덕션 빌드  →  dist/ 폴더 생성
-npm run preview  # 빌드 결과 미리보기  →  http://localhost:4173
-npm run lint     # 코드 린트 검사
+| 탭 | 내용 |
+|---|---|
+| 전체 현황 | Section A/B/C 카드 + Pod 전체 그리드 |
+| 창고 맵 | SVG 탑뷰 맵 — Pod 위치(상태별 색상), iw_hub 실시간 위치, M0609 고정 위치 |
+| Pod 현황 | 섹션 탭별 Pod 상태 그리드 (호버 시 좌표 툴팁) |
+| 로봇 현황 | 섹션별 M0609 + iw_hub 상태 카드 (iw_hub 실시간 좌표 포함) |
+
+---
+
+## 파일 구조
+
+```
+UI/src/
+├── App.tsx                      # 탭 라우팅 + 헤더/푸터
+├── types.ts                     # 데이터 타입 정의
+├── firebase.ts                  # Firebase 초기화
+├── hooks/
+│   └── useSections.ts           # sections + pods 실시간 구독
+└── components/
+    ├── SectionCard.tsx           # 섹션 요약 카드 (로봇 상태 + Pod 바)
+    ├── PodPanel.tsx              # Pod 상태 그리드 (섹션 탭 포함)
+    ├── WarehouseMap.tsx          # SVG 창고 탑뷰 맵
+    ├── RobotPanel.tsx            # 로봇 상태 카드 패널
+    ├── StatusBadge.tsx           # 상태 뱃지 (working/wait/stop)
+    └── AmazonLogo.tsx            # 헤더 로고
 ```
 
 ---
 
-## 프로젝트 구조
+## 데이터 흐름
 
 ```
-warehouse-dashboard/
-├── src/
-│   ├── components/
-│   │   ├── WarehouseMap.tsx     # 창고 실시간 맵 (SVG)
-│   │   ├── RobotCard.tsx        # 로봇 상태 카드
-│   │   ├── InventoryPanel.tsx   # 재고 및 배송 현황
-│   │   ├── BatteryBar.tsx       # 배터리 표시 바
-│   │   ├── StatusBadge.tsx      # 상태 뱃지
-│   │   └── AmazonLogo.tsx       # 헤더 로고
-│   ├── hooks/
-│   │   ├── useRobotFleet.ts     # Firestore 로봇 상태 실시간 구독
-│   │   └── useInventory.ts      # Firestore 재고/배송 실시간 구독
-│   ├── firebase.ts              # Firebase 초기화
-│   ├── types.ts                 # TypeScript 타입 정의
-│   └── App.tsx                  # 루트 컴포넌트
-├── .env.example                 # 환경 변수 템플릿 (공유용)
-├── .env.local                   # 실제 환경 변수 (git 제외)
-└── vite.config.ts               # Vite 설정 (@/ 경로 별칭)
+Firebase Firestore
+  sections/{A|B|C}          → SectionCard, RobotPanel
+  sections/{A|B|C}/pods/*   → PodPanel, WarehouseMap
 ```
+
+`useSections` 훅이 두 컬렉션을 동시 구독하고 `SectionData[]` 로 합쳐서 반환한다.  
+모든 컴포넌트는 이 훅 하나에서 데이터를 받는다.
 
 ---
 
-## Firestore 컬렉션 구조
+## 창고 맵 좌표계
 
-### `robots` 컬렉션
+minimap.py 와 동일한 월드 좌표계를 사용한다.
 
-| 문서 ID | 설명 |
-|---------|------|
-| `amr_001` | 자율주행 로봇 (AMR) |
-| `drone_001` | 드론 |
-| `m0609` | 두산 M0609 협동로봇 |
+- x 범위: -18 ~ 24 m
+- y 범위: -18 ~ 18 m
+- SVG viewBox: 840 × 720 (1 m = 20 px)
 
-### `products` 컬렉션
+| 구역 | x | y |
+|---|---|---|
+| Section A | -4.9 ~ 4.9 | 6.1 ~ 13.9 |
+| Section B | -4.9 ~ 4.9 | -3.9 ~ 3.9 |
+| Section C | -4.9 ~ 4.9 | -13.9 ~ -6.1 |
 
-물품 마스터 데이터 (`marker_id`, `name` 등)
+M0609 고정 위치 (robot_config.py 기준):
 
-### `items` 컬렉션
-
-개별 물품 인스턴스 (`detected_at`, `status`, `section`, `destination` 등)
-
----
-
-## 기술 스택
-
-| 분류 | 기술 |
-|------|------|
-| UI 프레임워크 | React 19 + TypeScript 6 |
-| 빌드 도구 | Vite 8 |
-| 스타일 | Tailwind CSS v4 |
-| 데이터베이스 | Firebase Firestore (실시간 구독) |
-| 경로 별칭 | `@/` → `src/` |
+| 로봇 | x | y |
+|---|---|---|
+| M0609_A | -12.07 | 7.92 |
+| M0609_B | -9.45 | 0.79 |
+| M0609_C | -10.45 | -7.80 |

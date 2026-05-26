@@ -2,10 +2,22 @@ import { useState, useEffect } from "react";
 import { useSections } from "@/hooks/useSections";
 import { SectionCard } from "@/components/SectionCard";
 import { PodPanel } from "@/components/PodPanel";
+import { WarehouseMap } from "@/components/WarehouseMap";
+import { RobotPanel } from "@/components/RobotPanel";
 import { AmazonLogo } from "@/components/AmazonLogo";
+
+type Tab = "overview" | "map" | "pods" | "robots";
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: "overview", label: "전체 현황" },
+  { id: "map",      label: "창고 맵" },
+  { id: "pods",     label: "Pod 현황" },
+  { id: "robots",   label: "로봇 현황" },
+];
 
 export default function App() {
   const sections = useSections();
+  const [tab, setTab] = useState<Tab>("overview");
   const [time, setTime] = useState(new Date());
 
   useEffect(() => {
@@ -67,24 +79,37 @@ export default function App() {
           </div>
         </div>
 
-        {/* 서브 네비 */}
+        {/* 탭 네비 */}
         <div style={{
           display: "flex", alignItems: "center", gap: "4px",
-          padding: "6px 20px", backgroundColor: "var(--amz-mid)"
+          padding: "0 20px", backgroundColor: "var(--amz-mid)"
         }}>
-          {["전체 현황", "섹션 관리", "Pod 현황", "로봇 제어"].map((menu) => (
-            <div key={menu} style={{
-              color: "#fff", fontSize: 13, padding: "4px 10px",
-              borderRadius: 2, cursor: "pointer", whiteSpace: "nowrap",
-              border: "1px solid transparent",
-            }}
-              onMouseEnter={e => (e.currentTarget.style.border = "1px solid #fff")}
-              onMouseLeave={e => (e.currentTarget.style.border = "1px solid transparent")}
-            >
-              {menu}
-            </div>
-          ))}
-          <div style={{ marginLeft: "auto", color: "var(--amz-orange)", fontSize: 12, fontWeight: 700 }}>
+          {TABS.map(({ id, label }) => {
+            const active = tab === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setTab(id)}
+                style={{
+                  color: active ? "var(--amz-orange)" : "#ccc",
+                  fontSize: 13,
+                  padding: "8px 14px",
+                  background: "transparent",
+                  border: "none",
+                  borderBottom: active ? "2px solid var(--amz-orange)" : "2px solid transparent",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  fontWeight: active ? 700 : 400,
+                  transition: "color 0.15s",
+                }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.color = "#fff"; }}
+                onMouseLeave={e => { if (!active) e.currentTarget.style.color = "#ccc"; }}
+              >
+                {label}
+              </button>
+            );
+          })}
+          <div style={{ marginLeft: "auto", color: "var(--amz-orange)", fontSize: 12, fontWeight: 700, paddingRight: 4 }}>
             ● LIVE&nbsp;&nbsp;{time.toLocaleTimeString("ko-KR")}
           </div>
         </div>
@@ -93,32 +118,38 @@ export default function App() {
       {/* 메인 콘텐츠 */}
       <main style={{ padding: "16px 20px", maxWidth: 1400, margin: "0 auto" }}>
 
-        {/* 섹션 카드 3개 */}
-        <section style={{ marginBottom: 16 }}>
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 1fr)",
-            gap: 12,
-          }}>
-            {sections.length === 0 ? (
-              <div style={{
-                gridColumn: "1 / -1",
-                padding: 24, textAlign: "center",
-                color: "var(--amz-muted)", fontSize: 14,
-                background: "#fff", border: "1px solid var(--amz-border)", borderRadius: 4,
-              }}>
-                Firebase 연결 중...
-              </div>
-            ) : (
-              sections.map((s) => <SectionCard key={s.section_id} section={s} />)
-            )}
-          </div>
-        </section>
+        {tab === "overview" && (
+          <>
+            <div style={{
+              display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 16,
+            }}>
+              {sections.length === 0 ? (
+                <div style={{
+                  gridColumn: "1 / -1", padding: 24, textAlign: "center",
+                  color: "var(--amz-muted)", fontSize: 14,
+                  background: "#fff", border: "1px solid var(--amz-border)", borderRadius: 4,
+                }}>
+                  Firebase 연결 중...
+                </div>
+              ) : (
+                sections.map((s) => <SectionCard key={s.section_id} section={s} />)
+              )}
+            </div>
+            <PodPanel sections={sections} />
+          </>
+        )}
 
-        {/* Pod 현황 */}
-        <section>
+        {tab === "map" && (
+          <WarehouseMap sections={sections} />
+        )}
+
+        {tab === "pods" && (
           <PodPanel sections={sections} />
-        </section>
+        )}
+
+        {tab === "robots" && (
+          <RobotPanel sections={sections} />
+        )}
 
       </main>
 
