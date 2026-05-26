@@ -18,6 +18,7 @@ from smart_factory.pose_estimator import yaw_from_quaternion
 from smart_factory.robot_defaults import (
     default_base_frame,
     default_cmd_vel_topic,
+    default_map_odom_origin,
     default_odom_topic,
     default_robot_id,
 )
@@ -52,6 +53,13 @@ except ImportError:
     NavigateToPose = object
 
 
+STACK_APPROACH_WAYPOINTS: dict[str, tuple[float, float]] = {
+    "STACK_1": (-12.8, 13.0),
+    "STACK_2": (-6.0, 1.5),
+    "STACK_3": (-7.0, -8.9),
+}
+
+
 class SequencePhase(Enum):
     MOVE_TO_STACK = "move_to_stack"
     LIFT_UP = "lift_up"
@@ -82,6 +90,7 @@ class MoveState:
     nav_result_future: object | None = None
     nav_goal_handle: object | None = None
     nav_goal_waypoint_index: int | None = None
+    nav_goal_started_at: float | None = None
     nav_cancel_future: object | None = None
     nav_cancel_reason: str | None = None
     nav_replan_route: AxisRoute | None = None
@@ -129,9 +138,7 @@ class Robot1StackSequence(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self.cmd_pub = None
-        if args.motion_controller != "nav2":
-            self.cmd_pub = self.create_publisher(Twist, args.cmd_vel_topic, 10)
+        self.cmd_pub = self.create_publisher(Twist, args.cmd_vel_topic, 10)
         self.lift_pub = self.create_publisher(JointState, args.lift_topic, 10)
         self.status_pub = self.create_publisher(String, args.status_topic, 10)
         self.reservation_pub = self.create_publisher(String, args.reservation_topic, 10)
@@ -386,7 +393,7 @@ class Robot1StackSequence(Node):
                 )
             )
 
-        if self.args.motion_controller == "nav2":
+        if self.args.motion_controller == "nav2" and not self._use_axis_controller_for_target(target_name):
             return self._step_nav2_move(target_name)
 
         if self.move_state.waypoint_index >= len(self.move_state.route.waypoints):
@@ -508,9 +515,11 @@ class Robot1StackSequence(Node):
                     f"phase={self.phase.value}; target={target_name}; nav2=goal_rejected"
                 )
                 self.move_state.nav_goal_handle = None
+                self.move_state.nav_goal_started_at = None
                 return False
 
             self.move_state.nav_goal_handle = goal_handle
+            self.move_state.nav_goal_started_at = self._now()
             self.move_state.nav_result_future = goal_handle.get_result_async()
 
         if self.move_state.nav_result_future is not None:
@@ -533,6 +542,7 @@ class Robot1StackSequence(Node):
             self.move_state.nav_result_future = None
             self.move_state.nav_goal_handle = None
             self.move_state.nav_goal_waypoint_index = None
+            self.move_state.nav_goal_started_at = None
 
             if status == GoalStatus.STATUS_SUCCEEDED:
                 self.move_state.waypoint_index += 1
@@ -575,12 +585,19 @@ class Robot1StackSequence(Node):
         waypoint_index = self.move_state.waypoint_index
         target = self.move_state.route.waypoints[waypoint_index]
         active_axis = self.move_state.route.axes[waypoint_index]
+        control_pose = self._pose_for_segment(target_name, active_axis)
+        if self._should_pre_align_before_approach(target_name):
+            if not self._step_pre_align(target_name, target, active_axis, control_pose):
+                return False
+
         final_waypoint_index = len(self.move_state.route.waypoints) - 1
-        yaw = _target_yaw_for_segment(
+        yaw = _nav2_goal_yaw_for_waypoint(
             self.pose,
-            target,
-            active_axis,
+            self.move_state.route,
+            waypoint_index,
             axis_aligned_heading=self._use_axis_aligned_heading(target_name, active_axis),
+            heading_correction_limit=self.args.nav2_heading_correction_limit,
+            orient_to_next_waypoint=self.args.nav2_orient_to_next_waypoint,
         )
         goal_x, goal_y = target
         if (
@@ -616,6 +633,10 @@ class Robot1StackSequence(Node):
         if bypass_reason:
             return bypass_reason, bypass_route
 
+        yaw_realign_reason = self._nav2_yaw_realign_reason(target_name)
+        if yaw_realign_reason:
+            return yaw_realign_reason, None
+
         peer_safety_wait_reason = self._peer_safety_wait_reason()
         if peer_safety_wait_reason:
             return f"peer_safety:{peer_safety_wait_reason}", None
@@ -628,6 +649,44 @@ class Robot1StackSequence(Node):
         if grid_wait_reason:
             return f"grid_reservation:{grid_wait_reason}", None
         return "", None
+
+    def _nav2_yaw_realign_reason(self, target_name: str) -> str:
+        if (
+            not self.args.nav2_yaw_realign
+            or self.pose is None
+            or self.move_state.route is None
+            or self.move_state.nav_goal_started_at is None
+            or self.move_state.waypoint_index >= len(self.move_state.route.waypoints)
+        ):
+            return ""
+        if self._now() - self.move_state.nav_goal_started_at < self.args.nav2_yaw_realign_grace:
+            return ""
+
+        waypoint_index = self.move_state.waypoint_index
+        target = self.move_state.route.waypoints[waypoint_index]
+        active_axis = self.move_state.route.axes[waypoint_index]
+        control_pose = self._pose_for_segment(target_name, active_axis)
+        target_yaw = _target_yaw_for_segment(
+            control_pose,
+            target,
+            active_axis,
+            axis_aligned_heading=self._use_axis_aligned_heading(target_name, active_axis),
+            heading_correction_limit=0.0,
+        )
+        control_yaw = _normalize_angle(control_pose.yaw + self.args.yaw_offset)
+        yaw_error = abs(_normalize_angle(target_yaw - control_yaw))
+        tolerance = self.args.nav2_yaw_realign_tolerance
+        if (
+            target_name == self.args.stack_target
+            and waypoint_index == len(self.move_state.route.waypoints) - 1
+        ):
+            tolerance = self.args.nav2_final_yaw_realign_tolerance
+        if yaw_error <= tolerance:
+            return ""
+        return (
+            f"yaw_realign:waypoint={waypoint_index + 1}; "
+            f"yaw_error={yaw_error:.3f}; tolerance={tolerance:.3f}"
+        )
 
     def _nav2_bypass_plan(self, target_name: str) -> tuple[str, AxisRoute | None]:
         if (
@@ -775,6 +834,7 @@ class Robot1StackSequence(Node):
         self.move_state.nav_result_future = None
         self.move_state.nav_goal_handle = None
         self.move_state.nav_goal_waypoint_index = None
+        self.move_state.nav_goal_started_at = None
         self.move_state.nav_cancel_future = None
         self.move_state.nav_cancel_reason = None
         self.move_state.nav_replan_route = None
@@ -1089,6 +1149,7 @@ class Robot1StackSequence(Node):
             target,
             active_axis,
             axis_aligned_heading=self._use_axis_aligned_heading(target_name, active_axis),
+            heading_correction_limit=self.args.nav2_heading_correction_limit,
         )
         control_yaw = _normalize_angle(control_pose.yaw + self.args.yaw_offset)
         yaw_error = _normalize_angle(target_yaw - control_yaw)
@@ -1115,7 +1176,7 @@ class Robot1StackSequence(Node):
         self.move_state.last_pre_align_error = yaw_error
         self.move_state.last_pre_align_time = now
 
-        if abs(yaw_error) <= self.args.stack_pre_align_yaw_tolerance:
+        if abs(yaw_error) <= self._pre_align_yaw_tolerance(target_name):
             self._publish_stop()
             self.move_state.pre_aligned_waypoint_index = self.move_state.waypoint_index
             self.move_state.last_pre_align_error = None
@@ -1151,6 +1212,15 @@ class Robot1StackSequence(Node):
             return self.args.stack_approach_speed
         return self.args.speed
 
+    def _pre_align_yaw_tolerance(self, target_name: str) -> float:
+        if (
+            target_name == self.args.stack_target
+            and self.move_state.route is not None
+            and self.move_state.waypoint_index == len(self.move_state.route.waypoints) - 1
+        ):
+            return self.args.stack_final_pre_align_yaw_tolerance
+        return self.args.stack_pre_align_yaw_tolerance
+
     def _turn_speed_for_segment(self) -> float:
         if self.move_state.avoidance_applied and self.move_state.waypoint_index <= 2:
             return self.args.peer_avoidance_turn_speed
@@ -1167,7 +1237,10 @@ class Robot1StackSequence(Node):
         return not (target_name == self.args.stack_target and active_axis == "y")
 
     def _use_axis_aligned_heading(self, target_name: str, active_axis: str) -> bool:
-        return not (target_name == self.args.stack_target and active_axis == "x")
+        return active_axis in {"x", "y"}
+
+    def _use_axis_controller_for_target(self, target_name: str) -> bool:
+        return target_name == self.args.stack_target and self.args.stack_use_axis_controller
 
     def _use_reverse_motion_for_segment(self) -> bool:
         return self.move_state.reverse_avoidance_waypoint_index == self.move_state.waypoint_index
@@ -1303,6 +1376,17 @@ def _build_route_for_sequence_target(
     args: argparse.Namespace,
 ) -> AxisRoute:
     target = PLACES[target_name]
+    stack_approach = STACK_APPROACH_WAYPOINTS.get(target_name)
+    if args.motion_controller == "nav2" and stack_approach is not None:
+        return _build_nav2_stack_approach_route(
+            start,
+            target_name,
+            stack_approach,
+            target,
+            turn_anticipation_distance=args.stack_turn_anticipation_distance,
+            final_approach_distance=args.stack_final_approach_distance,
+        )
+
     if (
         args.motion_controller == "nav2"
         and args.prefer_straight_nav2_route
@@ -1341,6 +1425,92 @@ def _build_route_for_sequence_target(
         start,
         target_name,
         axis_order=_axis_order_for_sequence_target(target_name, args),
+    )
+
+
+def _build_nav2_stack_approach_route(
+    start: tuple[float, float],
+    target_name: str,
+    stack_approach: tuple[float, float],
+    target: tuple[float, float],
+    *,
+    turn_anticipation_distance: float,
+    final_approach_distance: float,
+) -> AxisRoute:
+    corner = (start[0], stack_approach[1])
+    raw_steps: list[tuple[tuple[float, float], str]] = []
+    if turn_anticipation_distance > 0.0:
+        turn_entry = _offset_point_before_target(
+            corner,
+            start,
+            distance=turn_anticipation_distance,
+            active_axis="y",
+        )
+        raw_steps.extend(
+            [
+                (turn_entry, "y"),
+                ((stack_approach[0], turn_entry[1]), "x"),
+                (stack_approach, "y"),
+            ]
+        )
+    else:
+        raw_steps.extend(
+            [
+                (corner, "y"),
+                (stack_approach, "x"),
+            ]
+        )
+    final_axis = _dominant_axis(stack_approach, target)
+    final_entry = _offset_point_before_target(
+        target,
+        stack_approach,
+        distance=final_approach_distance,
+        active_axis=final_axis,
+    )
+    if not _same_xy(final_entry, stack_approach):
+        raw_steps.append((final_entry, final_axis))
+    raw_steps.append((target, final_axis))
+
+    waypoints, axes = _deduplicate_route_steps(start, raw_steps)
+    return AxisRoute(target_name=target_name, waypoints=waypoints, axes=axes)
+
+
+def _offset_point_before_target(
+    target: tuple[float, float],
+    previous: tuple[float, float],
+    *,
+    distance: float,
+    active_axis: str,
+) -> tuple[float, float]:
+    if distance <= 0.0:
+        return target
+    if active_axis == "x":
+        delta = target[0] - previous[0]
+        if math.isclose(delta, 0.0, abs_tol=1e-6):
+            return target
+        x = target[0] - math.copysign(min(abs(delta), distance), delta)
+        x = round(x, 10)
+        return (x, target[1])
+    if active_axis == "y":
+        delta = target[1] - previous[1]
+        if math.isclose(delta, 0.0, abs_tol=1e-6):
+            return target
+        y = target[1] - math.copysign(min(abs(delta), distance), delta)
+        y = round(y, 10)
+        return (target[0], y)
+    return target
+
+
+def _same_xy(
+    left: tuple[float, float],
+    right: tuple[float, float],
+    *,
+    tolerance: float = 1e-3,
+) -> bool:
+    return math.isclose(left[0], right[0], abs_tol=tolerance) and math.isclose(
+        left[1],
+        right[1],
+        abs_tol=tolerance,
     )
 
 
@@ -1453,10 +1623,48 @@ def _target_yaw_for_segment(
     active_axis: str,
     *,
     axis_aligned_heading: bool,
+    heading_correction_limit: float = 0.0,
 ) -> float:
+    direct_yaw = math.atan2(target[1] - pose.y, target[0] - pose.x)
     if axis_aligned_heading and active_axis in {"x", "y"}:
-        return _axis_target_yaw(_axis_error(pose, target, active_axis), active_axis)
-    return math.atan2(target[1] - pose.y, target[0] - pose.x)
+        axis_yaw = _axis_target_yaw(_axis_error(pose, target, active_axis), active_axis)
+        correction_limit = max(0.0, heading_correction_limit)
+        if correction_limit <= 0.0:
+            return axis_yaw
+        correction = _normalize_angle(direct_yaw - axis_yaw)
+        correction = _clamp(correction, -correction_limit, correction_limit)
+        return _normalize_angle(axis_yaw + correction)
+    return direct_yaw
+
+
+def _nav2_goal_yaw_for_waypoint(
+    pose: Pose2D,
+    route: AxisRoute,
+    waypoint_index: int,
+    *,
+    axis_aligned_heading: bool,
+    heading_correction_limit: float = 0.0,
+    orient_to_next_waypoint: bool = True,
+) -> float:
+    target = route.waypoints[waypoint_index]
+    active_axis = route.axes[waypoint_index]
+    if orient_to_next_waypoint and waypoint_index + 1 < len(route.waypoints):
+        next_target = route.waypoints[waypoint_index + 1]
+        next_axis = route.axes[waypoint_index + 1]
+        return _target_yaw_for_segment(
+            Pose2D(x=target[0], y=target[1], yaw=pose.yaw),
+            next_target,
+            next_axis,
+            axis_aligned_heading=axis_aligned_heading and next_axis in {"x", "y"},
+            heading_correction_limit=0.0,
+        )
+    return _target_yaw_for_segment(
+        pose,
+        target,
+        active_axis,
+        axis_aligned_heading=axis_aligned_heading,
+        heading_correction_limit=heading_correction_limit,
+    )
 
 
 def _straight_route_is_clear(
@@ -2181,12 +2389,8 @@ def _parse_args(
     robot_id = default_robot_id(default_robot_index)
     default_peer_index = 2 if default_robot_index == 1 else 1
     default_peer_id = default_robot_id(default_peer_index)
-    default_map_origins = {
-        1: (0.0, 0.0, 0.0),
-        2: (0.0, 0.0, 0.0),
-    }
-    default_map_origin = default_map_origins.get(default_robot_index, (0.0, 0.0, 0.0))
-    default_peer_map_origin = default_map_origins.get(default_peer_index, (0.0, 0.0, 0.0))
+    default_map_origin = default_map_odom_origin(default_robot_index)
+    default_peer_map_origin = default_map_odom_origin(default_peer_index)
     default_avoidance_role = "yield" if default_robot_index == 1 else "evade"
     default_reservation_priority = default_robot_index
     stack_targets = sorted(name for name in PLACES if name.startswith("STACK_"))
@@ -2301,7 +2505,7 @@ def _parse_args(
     parser.add_argument(
         "--angular-accel-limit",
         type=float,
-        default=3.0,
+        default=8.0,
         help="Maximum angular.z command change in rad/s^2. Use 0 to disable command ramping.",
     )
     parser.add_argument(
@@ -2316,10 +2520,17 @@ def _parse_args(
         default=True,
         help="Stop and PD-align yaw before the final x-axis stack approach.",
     )
-    parser.add_argument("--stack-pre-align-kp", type=float, default=1.2)
+    parser.add_argument(
+        "--stack-use-axis-controller",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use the straight axis controller for stack pickup even when the rest of the sequence uses Nav2.",
+    )
+    parser.add_argument("--stack-pre-align-kp", type=float, default=1.8)
     parser.add_argument("--stack-pre-align-kd", type=float, default=0.12)
-    parser.add_argument("--stack-pre-align-turn-speed", type=float, default=0.45)
-    parser.add_argument("--stack-pre-align-yaw-tolerance", type=float, default=0.035)
+    parser.add_argument("--stack-pre-align-turn-speed", type=float, default=1.0)
+    parser.add_argument("--stack-pre-align-yaw-tolerance", type=float, default=0.08)
+    parser.add_argument("--stack-final-pre-align-yaw-tolerance", type=float, default=0.035)
     parser.add_argument(
         "--unload-pre-align",
         action=argparse.BooleanOptionalAction,
@@ -2332,6 +2543,39 @@ def _parse_args(
         default=0.08,
         help="Y-axis tolerance used before the final stack approach.",
     )
+    parser.add_argument(
+        "--stack-turn-anticipation-distance",
+        type=float,
+        default=1.0,
+        help="Meters before a stack corner where Nav2 should start rotating toward the next axis.",
+    )
+    parser.add_argument(
+        "--stack-final-approach-distance",
+        type=float,
+        default=0.6,
+        help="Minimum straight final approach distance before entering under the stack.",
+    )
+    parser.add_argument(
+        "--nav2-heading-correction-limit",
+        type=float,
+        default=0.0,
+        help="Maximum yaw correction in radians toward each Nav2 waypoint while keeping axis-aligned travel.",
+    )
+    parser.add_argument(
+        "--nav2-orient-to-next-waypoint",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Orient non-final Nav2 waypoint goals toward the following route segment.",
+    )
+    parser.add_argument(
+        "--nav2-yaw-realign",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Cancel an active Nav2 goal and re-align when heading drifts too far from the active axis.",
+    )
+    parser.add_argument("--nav2-yaw-realign-grace", type=float, default=0.8)
+    parser.add_argument("--nav2-yaw-realign-tolerance", type=float, default=0.18)
+    parser.add_argument("--nav2-final-yaw-realign-tolerance", type=float, default=0.08)
     parser.add_argument("--turn-speed", type=float, default=1.5)
     parser.add_argument("--distance-tolerance", type=float, default=0.12)
     parser.add_argument("--yaw-tolerance", type=float, default=0.2)
