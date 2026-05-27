@@ -119,8 +119,8 @@ POD_STACKS = [
 SECTION_POD_USD = _POD_USD
 SECTION_GRID_COLS = 3
 SECTION_GRID_ROWS = 3
-SECTION_GRID_DX = 2.8
-SECTION_GRID_DY = 2.0
+SECTION_GRID_DX = 3.5
+SECTION_GRID_DY = 3.0
 SECTION_GRID_CENTERS = {
     "A": (0.0,  10.0),
     "B": (0.0,   0.0),
@@ -139,7 +139,7 @@ def _make_grid(cx: float, cy: float,
     is exactly the section bounding-box center (cx, cy).
     """
     xs = [cx + (c - (cols - 1) / 2.0) * dx for c in range(cols)]
-    ys = [cy + ((rows - 1) / 2.0 - r) * dy for r in range(rows)]
+    ys = [cy + (r - (rows - 1) / 2.0) * dy for r in range(rows)]
     return [(round(x, 3), round(y, 3), z) for y in ys for x in xs]
 
 
@@ -208,14 +208,14 @@ ROBOT_REGISTRY = [
     # },
 
     # ── IW Hub #1 ─ Section A 스크립트 루트 ────────────────────────────
-    # 경로: spawn(-12.8,9.2) → lift up → (-12.8,12.64) → (-7.4,12.64)
-    #        → (-7.4,6.5) → fast (12.5,6.5) lift down → (-0.036,6.508)
-    #        → (-0.036,12.23) → (-12.7,12.23) → (-12.7,9.2) lift down → wait
+    # 경로: spawn(-12.8,13.0) yaw=0 → south y=9.0(pod) → lift
+    #        → north y=13.0 → east x=-3.5 → south y=7.0(slot A-01) → lower
+    #        → north y=13.0 → west x=-12.7 → wait
     {
         "type"            : "iw_hub",
         "name"            : "iw_hub_01",
-        "spawn_xyz"       : (-12.8, 9.2, -0.14),
-        "spawn_yaw"       : -90.0,
+        "spawn_xyz"       : (-12.8, 13.0, -0.14),
+        "spawn_yaw"       : 0.0,
         "mode"            : "section_a",
         "section"         : "A",
         "complete_topic"  : "/m0609_A/work",
@@ -240,13 +240,16 @@ ROBOT_REGISTRY = [
         "complete_threshold": 1,
     },
 
-    # ── IW Hub #3 ─ PodStack_03 에서 +x 1m 오프셋, Section C 배달 ──────────
-    # PodStack_03(-9.7,-8.9) 과 겹치면 Section C pod 스택 물리 충돌 → +1m 오프셋
+    # ── IW Hub #3 ─ Section C 스크립트 루트 ────────────────────────────
+    # 경로: spawn(-9.7,-9.6) yaw=0 → north y=-8.9(pod) → lift
+    #        → east x=-3.5 → south y=-13.0(slot C-01) → lower
+    #        → north y=-9.6 → west x=-9.7 → wait
     {
         "type"            : "iw_hub",
         "name"            : "iw_hub_03",
-        "spawn_xyz"       : (-9.7, -8.6, -0.14),   # PodStack_03(-9.7,-8.9) 에서 +x 1.4m
-        "spawn_yaw"       : 90.0,
+        "spawn_xyz"       : (-9.7, -9.6, -0.14),
+        "spawn_yaw"       : 0.0,
+        "mode"            : "section_c",
         "section"         : "C",
         "complete_topic"  : "/m0609_C/work",
         "complete_signal" : "C_complete",
