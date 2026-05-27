@@ -63,8 +63,10 @@ class SectionCFSM:
                 x, y, _ = self._get_xy_hdg()
                 print(f"[{self.name}] C_WAITING  signal={cnt}/{self._complete_needed} "
                       f"pos=({x:.2f},{y:.2f}) del={self._drop_idx}/{MAX_DELIVERIES}")
-            if cnt >= self._complete_needed:
+            if not self._b_signal_ready and cnt >= self._complete_needed:
                 self._reset_signal_count()
+                self._b_signal_ready = True
+            if self._b_signal_ready:
                 self._sa_state = "TURN_TO_POD"
                 self._fsm_step = 0
                 print(f"[{self.name}] C_WAITING → TURN_TO_POD  yaw=90°")
@@ -118,6 +120,7 @@ class SectionCFSM:
 
         elif self._sa_state == "LOWERING":
             if self._run_lift_phase(up=False):
+                self._b_signal_ready = False
                 self._drop_idx += 1
                 self._sa_state = "GOTO_RETURN_Y"
                 self._fsm_step = 0
@@ -194,6 +197,7 @@ class SectionCFSM:
 
         elif self._sa_state == "LOWERING_REPL":
             if self._run_lift_phase(up=False):
+                self._b_signal_ready = False
                 self._sa_state = "GOTO_HOME_Y"
                 self._fsm_step = 0
                 print(f"[{self.name}] C_LOWERING_REPL → GOTO_HOME_Y  y={HOME_Y} (후진)")
@@ -201,6 +205,7 @@ class SectionCFSM:
         elif self._sa_state == "GOTO_HOME_Y":
             if self._drive_minimap_axis_no_turn(HOME_Y, "y", ROUTE_TOL):
                 self._publish_start_signal()
+                self._reset_signal_count()
                 self._sa_state = "WAITING"
                 self._fsm_step = 0
                 print(f"[{self.name}] C_GOTO_HOME_Y → WAITING  cycle del={self._drop_idx}/{MAX_DELIVERIES}")
@@ -209,7 +214,9 @@ class SectionCFSM:
 
         elif self._sa_state == "GOTO_DONE_X":
             if self._drive_minimap_axis_with_heading(HOME_X, "x", math.pi, ROUTE_TOL, fast=True):
+                self._drop_idx = 0
                 self._publish_start_signal()
+                self._reset_signal_count()
                 self._sa_state = "WAITING"
                 self._fsm_step = 0
-                print(f"[{self.name}] C_GOTO_DONE_X → WAITING  모든 사이클({MAX_DELIVERIES}) 완료")
+                print(f"[{self.name}] C_GOTO_DONE_X → WAITING  모든 사이클({MAX_DELIVERIES}) 완료, drop_idx 리셋")

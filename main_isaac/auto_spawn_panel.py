@@ -20,7 +20,7 @@ import omni.usd
 from pxr import UsdGeom, UsdPhysics, UsdShade, Gf, Sdf
 
 # ── 설정 파일 경로 (원본 위치 그대로 사용) ────────────────────────────────
-_CONFIG_DIR       = Path("/home/rokey/Downloads")
+_CONFIG_DIR       = Path(__file__).parent
 _QUEUE            = _CONFIG_DIR / "spawn_queue.json"
 _LABEL_SIZES_FILE = _CONFIG_DIR / "label_sizes.json"
 _ZONE_CONFIG_FILE = _CONFIG_DIR / "zone_config.json"

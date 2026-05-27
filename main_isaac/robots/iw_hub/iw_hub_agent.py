@@ -25,7 +25,7 @@ from pxr import UsdGeom, Sdf, Gf
 
 import robot_config as C
 from ..base_robot import BaseRobotAgent
-from .fsm import SectionAFSM, SectionCFSM, PickupFSM, StandardFSM
+from .fsm import SectionAFSM, SectionBFSM, SectionCFSM, PickupFSM, StandardFSM
 
 # ── ROS2 (선택 사항) ──────────────────────────────────────────────────
 try:
@@ -193,7 +193,7 @@ def _build_action_graph(robot_root: str, robot_name: str):
     return graph
 
 
-class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgent):
+class IwHubAgent(SectionAFSM, SectionBFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgent):
     """IW Hub 스폰 + ActionGraph 설정 + 자율 미션 FSM."""
 
     _ROBOTS_PATH = "/World"
@@ -259,6 +259,7 @@ class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgen
         self._ros2_work_pub   = None
         self._drop_idx        = 0
         self._fsm_step        = 0
+        self._b_signal_ready  = False
         self._physics_step    = 0
         self._home_xy         = (float(self.spawn_xyz[0]), float(self.spawn_xyz[1]))
         self._nav_target      = None
@@ -299,8 +300,8 @@ class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgen
             self._dock_target    = None
             self._dock_pid       = {"axis": None, "err_i": 0.0, "prev_err": 0.0}
             self.mission_state   = -1   # pickup 모드에서는 표준 FSM 미사용
-        elif self._mode in ("section_a", "section_c"):
-            # 섹션 A/C 스크립트 루트 모드
+        elif self._mode in ("section_a", "section_b", "section_c"):
+            # 섹션 A/B/C 스크립트 루트 모드
             self._sa_state     = "WAITING"
             self._fsm_step     = 0
             self.mission_state = -1
@@ -508,7 +509,7 @@ class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgen
 
     def _spot_too_close(self) -> bool:
         """Pause IW Hub commands while a Spot is close to the hub body."""
-        if self._mode in ("pickup", "section_a", "section_c"):
+        if self._mode in ("pickup", "section_a", "section_b", "section_c"):
             return False
         try:
             hx, hy, _ = self._get_xy_hdg()
@@ -1048,6 +1049,8 @@ class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgen
             self._run_pickup_fsm()
         elif self._mode == "section_a":
             self._run_section_a_fsm()
+        elif self._mode == "section_b":
+            self._run_section_b_fsm()
         elif self._mode == "section_c":
             self._run_section_c_fsm()
         else:
