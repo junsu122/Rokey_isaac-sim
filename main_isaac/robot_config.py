@@ -110,8 +110,8 @@ POD_USD  = _POD_USD   # public alias used by minimap.py
 
 POD_STACKS = [
     {"name": "PodStack_01", "usd": _POD_USD, "xyz": (-12.8,  9.0, 0.0), "yaw": 0.0},  # IW Hub A 홈
-    {"name": "PodStack_02", "usd": _POD_USD, "xyz": ( -8.2,  1.5, 0.0), "yaw": 0.0},  # IW Hub B 홈
-    {"name": "PodStack_03", "usd": _POD_USD, "xyz": ( -9.7, -8.9, 0.0), "yaw": 0.0},  # IW Hub C 홈
+    {"name": "PodStack_02", "usd": _POD_USD, "xyz": ( -8.2,  1.55, 0.0), "yaw": 0.0},  # IW Hub B 홈
+    {"name": "PodStack_03", "usd": _POD_USD, "xyz": ( -9.65, -8.9, 0.0), "yaw": 0.0},  # IW Hub C 홈
     {"name": "PodStack_04", "usd": _POD_USD, "xyz": ( 12.0, 14.0, 0.0), "yaw": 0.0},  # 드론 배달 목적지
 ]
 
@@ -230,10 +230,10 @@ ROBOT_REGISTRY = [
     {
         "type"            : "iw_hub",
         "name"            : "iw_hub_02",
-        "spawn_xyz"       : (-6.45, 1.5, -0.14),
+        "spawn_xyz"       : (-6.45, 1.55, -0.14),
         "spawn_yaw"       : 0.0,
         "mode"            : "pickup",
-        "pickup_xyz"      : (-7.95, 1.5),
+        "pickup_xyz"      : (-7.95, 1.55),
         "section"         : "B",
         "complete_topic"  : "/m0609_B/work",
         "complete_signal" : "B_complete",
@@ -241,13 +241,13 @@ ROBOT_REGISTRY = [
     },
 
     # ── IW Hub #3 ─ Section C 스크립트 루트 ────────────────────────────
-    # 경로: spawn(-9.7,-9.6) yaw=0 → north y=-8.9(pod) → lift
+    # 경로: spawn(-9.7,-11.0) yaw=0 → north y=-8.9(pod) → lift
     #        → east x=-3.5 → south y=-13.0(slot C-01) → lower
-    #        → north y=-9.6 → west x=-9.7 → wait
+    #        → north y=-11.0 → west x=-9.7 → wait
     {
         "type"            : "iw_hub",
         "name"            : "iw_hub_03",
-        "spawn_xyz"       : (-9.7, -9.6, -0.14),
+        "spawn_xyz"       : (-9.65, -11.0, -0.14),
         "spawn_yaw"       : 0.0,
         "mode"            : "section_c",
         "section"         : "C",

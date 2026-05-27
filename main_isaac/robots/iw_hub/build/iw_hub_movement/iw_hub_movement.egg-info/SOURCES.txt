@@ -10,6 +10,7 @@ setup.py
 ../../build/iw_hub_movement/iw_hub_movement.egg-info/zip-safe
 iw_hub_movement/__init__.py
 iw_hub_movement/axis_nav.py
+iw_hub_movement/manual_console.py
 iw_hub_movement/models.py
 iw_hub_movement/move_to_point.py
 launch/iw_hub.launch.py

@@ -74,5 +74,6 @@ class StandardFSM:
 
         elif self.mission_state == 5:            # GOTO_HOME
             if self._nav_along_path():
+                self._publish_start_signal()
                 self.mission_state = 0
                 print(f"[{self.name}] GOTO_HOME → WAITING (배달 #{self._drop_idx})")

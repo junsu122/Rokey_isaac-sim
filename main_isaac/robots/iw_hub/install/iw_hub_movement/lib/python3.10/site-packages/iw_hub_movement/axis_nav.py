@@ -36,8 +36,8 @@ _ISAAC_QOS = QoSProfile(
 
 _D_TOL = 0.12   # 위치 허용 오차 [m]
 _Y_TOL = 0.15   # 방향 허용 오차 [rad]
-_MAX_V = 1.5    # 최대 직진 속도 [m/s]
-_MAX_W = 2.0    # 최대 회전 속도 [rad/s]
+_MAX_V = 3.5    # 최대 직진 속도 [m/s]
+_MAX_W = 0.8    # 최대 회전 속도 [rad/s]
 
 
 class AxisNavNode(Node):

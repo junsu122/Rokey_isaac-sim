@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Warehouse Layout</title>
+<style>
+  body { background: #1a1a1a; color: #eee; font-family: monospace; margin: 0; padding: 10px; }
+  h2 { text-align: center; color: #ccc; margin: 4px 0; font-size: 14px; }
+  canvas { display: block; margin: 0 auto; border: 1px solid #444; }
+  #info { text-align: center; font-size: 12px; color: #aaa; margin-top: 6px; }
+  .legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 8px; font-size: 12px; }
+  .leg-item { display: flex; align-items: center; gap: 4px; }
+  .leg-box { width: 14px; height: 14px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<h2>Warehouse Top-Down Layout (단위: m)</h2>
+<canvas id="c"></canvas>
+<div class="legend">
+  <div class="leg-item"><div class="leg-box" style="background:#e03030"></div> Section 경계 (빨간선)</div>
+  <div class="leg-item"><div class="leg-box" style="background:#3a7fd4"></div> Pod (섹션 내부)</div>
+  <div class="leg-item"><div class="leg-box" style="background:#f0a030"></div> PodStack (고정)</div>
+  <div class="leg-item"><div class="leg-box" style="background:#00dddd"></div> IW Hub</div>
+  <div class="leg-item"><div class="leg-box" style="background:#40cc40"></div> M0609 팔</div>
+  <div class="leg-item"><div class="leg-box" style="background:#40cc40; opacity:0.3"></div> Spot 순찰</div>
+  <div class="leg-item"><div class="leg-box" style="background:#ffdd00"></div> Drone</div>
+  <div class="leg-item"><div class="leg-box" style="background:#55aaff; opacity:0.4"></div> 통로 (줄 사이)</div>
+</div>
+<div id="info">마우스를 올리면 좌표 표시</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// 월드 범위
+const WX0 = -18, WX1 = 24;
+const WY0 = -18, WY1 = 18;
+const IW = 980, IH = 700;
+canvas.width  = IW;
+canvas.height = IH;
+
+function w2p(wx, wy) {
+  const px = (wx - WX0) / (WX1 - WX0) * IW;
+  const py = (1 - (wy - WY0) / (WY1 - WY0)) * IH;
+  return [px, py];
+}
+function p2w(px, py) {
+  const wx = px / IW * (WX1 - WX0) + WX0;
+  const wy = (1 - py / IH) * (WY1 - WY0) + WY0;
+  return [wx.toFixed(2), wy.toFixed(2)];
+}
+function wlen(m) { return m / (WX1 - WX0) * IW; }
+function hlen(m) { return m / (WY1 - WY0) * IH; }
+
+// ── 데이터 ────────────────────────────────────────────
+// Section 경계 (빨간선 좌표)
+const SECTIONS = [
+  { name: 'A', x0: -4.9, x1: 4.9, y0: 6.1,  y1: 13.9, color: '#e03030', podColor: '#3a7fd4' },
+  { name: 'B', x0: -4.9, x1: 4.9, y0: -3.9,  y1: 3.9,  color: '#e03030', podColor: '#3a7fd4' },
+  { name: 'C', x0: -4.9, x1: 4.9, y0: -13.9, y1: -6.1, color: '#e03030', podColor: '#3a7fd4' },
+];
+
+// Pod 그리드 생성
+function makeGrid(cx, cy, cols=3, rows=4, dx=2.8, dy=2.0) {
+  const result = [];
+  const xs = Array.from({length:cols}, (_,c) => cx + (c-(cols-1)/2)*dx);
+  const ys = Array.from({length:rows}, (_,r) => cy + (r-(rows-1)/2)*dy);
+  let idx = 1;
+  for (const y of ys) for (const x of xs) result.push({x, y, slot: idx++});
+  return result;
+}
+
+const SECTION_PODS = {
+  A: makeGrid(0, 10),
+  B: makeGrid(0, -0.2),
+  C: makeGrid(0, -10),
+};
+
+// 고정 PodStack
+const POD_STACKS = [
+  { name: 'PS01', x: -12.8, y:  9.0, color: '#f0a030', note: 'IW Hub_01 홈' },
+  { name: 'PS02', x:  -8.2, y:  1.5, color: '#f0a030', note: 'IW Hub_02 홈' },
+  { name: 'PS03', x:  -9.7, y: -8.9, color: '#f0a030', note: 'IW Hub_03 홈' },
+  { name: 'PS04', x:  12.0, y: 14.0, color: '#ffaa00', note: '드론 배달지' },
+];
+
+// IW Hub
+const IW_HUBS = [
+  { name: 'hub_01', x: -12.8, y:  9.2, yaw: 90,  section: 'A' },
+  { name: 'hub_02', x:  -6.45,y:  1.5, yaw:  0,  section: 'B' },
+  { name: 'hub_03', x:  -9.7, y: -8.6, yaw: 90,  section: 'C' },
+];
+
+// M0609
+const M0609S = [
+  { name: 'A', x: -12.07, y:  7.92, goal: [-12.7,  9.0] },
+  { name: 'B', x:  -9.45, y:  0.79, goal: [ -8.2,  1.4] },
+  { name: 'C', x: -10.45, y: -7.80, goal: [ -9.7, -8.9] },
+  { name: '3W',x: -14.8,  y:  0.5,  goal: [-14.3,  0.0] },
+];
+
+// Drone
+const DRONE = { x: -16.0, y: -16.0 };
+
+// 컨베이어
+const CONVEYORS = [
+  [13.5,-10.5],[15.5,-10.5],[17.5,-10.5],[19.5,-10.5],
+  [13.5,  0.0],[15.5,  0.0],[17.5,  0.0],[19.5,  0.0],
+  [13.5, 10.5],[15.5, 10.5],[17.5, 10.5],[19.5, 10.5],
+  [-15.0,0.0],[-17.0,0.0],[-19.0,0.0],
+  [-12.8,-2.35],[-12.8,2.35],[-11.3,-7.8],[-9.5,0.0],
+];
+
+// Spot 순찰 경로
+const SPOT1_WPS = [[4.5,5],[4.5,14.5],[0,14.5],[-4.5,14.5],[-4.5,5],[-4.5,-4.7],[0,-4.7],[4.5,-4.7]];
+const SPOT2_WPS = [[4.5,-4.7],[4.5,-14.5],[0,-14.5],[-4.5,-14.5],[-4.5,-4.7],[-4.5,4.3],[0,4.3],[4.5,4.3]];
+
+// ── 드로잉 ────────────────────────────────────────────
+function draw() {
+  ctx.clearRect(0, 0, IW, IH);
+
+  // 배경
+  ctx.fillStyle = '#1e1e1e';
+  ctx.fillRect(0, 0, IW, IH);
+
+  // 격자
+  ctx.strokeStyle = '#2e2e2e';
+  ctx.lineWidth = 1;
+  for (let gx = -16; gx <= 24; gx += 2) {
+    const [px] = w2p(gx, 0);
+    ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, IH); ctx.stroke();
+    ctx.fillStyle = '#444'; ctx.font = '10px monospace';
+    ctx.fillText(gx, px+2, IH-4);
+  }
+  for (let gy = -16; gy <= 18; gy += 2) {
+    const [, py] = w2p(0, gy);
+    ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(IW, py); ctx.stroke();
+    ctx.fillStyle = '#444';
+    ctx.fillText(gy, 2, py-3);
+  }
+
+  // 외벽
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 2;
+  const [owx0, owy0] = w2p(-16.65, 16.65);
+  const [owx1, owy1] = w2p(16.65, -16.65);
+  ctx.strokeRect(owx0, owy0, owx1-owx0, owy1-owy0);
+
+  // 서측 조작실
+  const MANIP = [[-16.5,-8,3.5,10],[-16.5,-8,-3.5,3.5],[-16.5,-8,-10,-3.5]];
+  MANIP.forEach(([x0,x1,y0,y1]) => {
+    const [px0,py0] = w2p(x0,y1);
+    const [px1,py1] = w2p(x1,y0);
+    ctx.fillStyle = 'rgba(50,50,70,0.6)';
+    ctx.fillRect(px0,py0,px1-px0,py1-py0);
+    ctx.strokeStyle='#444'; ctx.lineWidth=1;
+    ctx.strokeRect(px0,py0,px1-px0,py1-py0);
+  });
+
+  // 동측 선별실
+  const SORT = [[16.5,23,5.1,15.9],[16.5,23,-5.3,5.3],[16.5,23,-15.9,-5.1]];
+  SORT.forEach(([x0,x1,y0,y1]) => {
+    const [px0,py0] = w2p(x0,y1);
+    const [px1,py1] = w2p(x1,y0);
+    ctx.fillStyle = 'rgba(50,50,70,0.6)';
+    ctx.fillRect(px0,py0,px1-px0,py1-py0);
+    ctx.strokeStyle='#444'; ctx.lineWidth=1;
+    ctx.strokeRect(px0,py0,px1-px0,py1-py0);
+  });
+
+  // 컨베이어
+  CONVEYORS.forEach(([cx,cy]) => {
+    const [px0,py0] = w2p(cx-0.9, cy+0.35);
+    const [px1,py1] = w2p(cx+0.9, cy-0.35);
+    ctx.fillStyle = '#285060';
+    ctx.fillRect(px0,py0,px1-px0,py1-py0);
+  });
+
+  // DROP LINE (x=-7.5)
+  const [dlx] = w2p(-7.5, 0);
+  ctx.strokeStyle = '#cc3333';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6,4]);
+  ctx.beginPath(); ctx.moveTo(dlx,0); ctx.lineTo(dlx,IH); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle='#cc3333'; ctx.font='10px monospace';
+  ctx.fillText('DROP LINE', dlx+3, 14);
+
+  // ── Section 경계 + 내부 ──────────────────────────────
+  SECTIONS.forEach(sec => {
+    const [px0,py0] = w2p(sec.x0, sec.y1);
+    const [px1,py1] = w2p(sec.x1, sec.y0);
+    const pw = px1-px0, ph = py1-py0;
+
+    // 배경
+    ctx.fillStyle = 'rgba(80,30,30,0.15)';
+    ctx.fillRect(px0,py0,pw,ph);
+
+    // 빨간 경계선
+    ctx.strokeStyle = sec.color;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(px0,py0,pw,ph);
+
+    // 섹션 이름
+    const [cx,cy] = w2p((sec.x0+sec.x1)/2, (sec.y0+sec.y1)/2);
+    ctx.fillStyle = sec.color;
+    ctx.font = 'bold 13px monospace';
+    ctx.fillText(`Sec ${sec.name}`, cx-22, cy+5);
+
+    // ── Pod 줄 사이 통로 강조 ──────────────────────────
+    const pods = SECTION_PODS[sec.name];
+    const yVals = [...new Set(pods.map(p=>p.y))].sort((a,b)=>a-b);
+    // 줄 사이 공간 (pod y ± 0.5 사이)
+    for (let i=0; i<yVals.length-1; i++) {
+      const yt = yVals[i]   + 0.5;
+      const yb = yVals[i+1] - 0.5;
+      const [ax0, ay0] = w2p(sec.x0, yb);
+      const [ax1, ay1] = w2p(sec.x1, yt);
+      ctx.fillStyle = 'rgba(85,170,255,0.10)';
+      ctx.fillRect(ax0, ay0, ax1-ax0, ay1-ay0);
+    }
+    // 섹션 서쪽 진입 통로
+    const [ex0,ey0] = w2p(-6.5, sec.y0);
+    const [ex1,ey1] = w2p(sec.x0, sec.y1);
+    ctx.fillStyle = 'rgba(85,170,255,0.07)';
+    ctx.fillRect(ex0, ey0, ex1-ex0, ey1-ey0);
+
+    // ── Pod 배치 ──────────────────────────────────────
+    pods.forEach(pod => {
+      const [px,py] = w2p(pod.x, pod.y);
+      const hw = wlen(0.9), hh = hlen(0.9);
+
+      if (pod.slot === 1) {
+        // 슬롯 01: IW Hub 배달 예약 (빈 자리 표시)
+        ctx.strokeStyle = '#e03030';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4,3]);
+        ctx.strokeRect(px-hw, py-hh, hw*2, hh*2);
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(200,50,50,0.15)';
+        ctx.fillRect(px-hw, py-hh, hw*2, hh*2);
+        ctx.fillStyle = '#e03030';
+        ctx.font = '9px monospace';
+        ctx.fillText('IW↓', px-10, py+4);
+      } else if (pod.slot >= 10) {
+        // 슬롯 10~12: 드론 픽업용 ArUco 박스 적층
+        ctx.fillStyle = '#4466bb';
+        ctx.fillRect(px-hw, py-hh, hw*2, hh*2);
+        ctx.strokeStyle = '#88aaff';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(px-hw, py-hh, hw*2, hh*2);
+        // ArUco 박스 적층 표시 (3개)
+        ctx.fillStyle = '#aaccff';
+        ctx.font = '8px monospace';
+        ctx.fillText('📦×3', px-12, py+4);
+      } else {
+        // 일반 Pod
+        ctx.fillStyle = '#2a5a8a';
+        ctx.fillRect(px-hw, py-hh, hw*2, hh*2);
+        ctx.strokeStyle = '#6699cc';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px-hw, py-hh, hw*2, hh*2);
+      }
+
+      // 슬롯 번호
+      ctx.fillStyle = '#ccc';
+      ctx.font = '8px monospace';
+      ctx.fillText(pod.slot.toString().padStart(2,'0'), px-6, py+3);
+    });
+
+    // 줄 y값 레이블
+    yVals.forEach(y => {
+      const [,py] = w2p(sec.x0, y);
+      ctx.fillStyle = '#888';
+      ctx.font = '9px monospace';
+      ctx.fillText(`y=${y}`, w2p(sec.x0-0.1,0)[0]-36, py+3);
+    });
+  });
+
+  // Spot 순찰 경로
+  [[SPOT1_WPS,'rgba(80,220,130,0.3)'],[SPOT2_WPS,'rgba(80,220,130,0.3)']].forEach(([wps,col]) => {
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5,5]);
+    ctx.beginPath();
+    wps.forEach(([x,y],i) => {
+      const [px,py] = w2p(x,y);
+      i===0 ? ctx.moveTo(px,py) : ctx.lineTo(px,py);
+    });
+    ctx.closePath(); ctx.stroke();
+    ctx.setLineDash([]);
+  });
+
+  // 고정 PodStack
+  POD_STACKS.forEach(ps => {
+    const [px,py] = w2p(ps.x, ps.y);
+    const hw = wlen(0.85), hh = hlen(0.85);
+    ctx.fillStyle = ps.color;
+    ctx.fillRect(px-hw, py-hh, hw*2, hh*2);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(px-hw, py-hh, hw*2, hh*2);
+    ctx.fillStyle = '#111';
+    ctx.font = 'bold 9px monospace';
+    ctx.fillText(ps.name, px-12, py+4);
+  });
+
+  // IW Hub
+  IW_HUBS.forEach(hub => {
+    const [px,py] = w2p(hub.x, hub.y);
+    const r = wlen(0.55);
+    ctx.fillStyle = '#00cccc';
+    ctx.beginPath(); ctx.arc(px,py,r,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#00ffff'; ctx.lineWidth=1.5;
+    ctx.stroke();
+    // 방향 화살표
+    const yawRad = hub.yaw * Math.PI / 180;
+    const ax = px + r*1.6*Math.cos(yawRad);
+    const ay = py - r*1.6*Math.sin(yawRad);
+    ctx.strokeStyle='#00ffff'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(ax,ay); ctx.stroke();
+    ctx.fillStyle='#00cccc'; ctx.font='9px monospace';
+    ctx.fillText(hub.name, px-16, py-10);
+  });
+
+  // M0609
+  M0609S.forEach(arm => {
+    const [px,py] = w2p(arm.x, arm.y);
+    const hw = wlen(0.4), hh = hlen(0.4);
+    ctx.fillStyle = '#40aa40';
+    ctx.fillRect(px-hw,py-hh,hw*2,hh*2);
+    ctx.strokeStyle='#80ff80'; ctx.lineWidth=1;
+    ctx.strokeRect(px-hw,py-hh,hw*2,hh*2);
+    // goal 화살표
+    const [gx,gy] = w2p(arm.goal[0], arm.goal[1]);
+    ctx.strokeStyle='rgba(80,220,80,0.5)'; ctx.lineWidth=1;
+    ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(gx,gy); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#40cc40'; ctx.font='9px monospace';
+    ctx.fillText(`M${arm.name}`, px-8, py-8);
+  });
+
+  // Drone
+  const [dpx,dpy] = w2p(DRONE.x, DRONE.y);
+  ctx.fillStyle='#ffdd00';
+  ctx.beginPath();
+  [45,135,225,315].forEach(a => {
+    const r=wlen(0.6), rad=a*Math.PI/180;
+    ctx.moveTo(dpx,dpy);
+    ctx.lineTo(dpx+r*Math.cos(rad), dpy-r*Math.sin(rad));
+  });
+  ctx.stroke();
+  ctx.fillStyle='#ffdd00'; ctx.font='9px monospace';
+  ctx.fillText('Drone', dpx-14, dpy-10);
+
+  // PodStack_04 배달지 강조
+  const [p4x,p4y] = w2p(12.0,14.0);
+  ctx.strokeStyle='#00ccff'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(p4x,p4y,wlen(1.2),0,Math.PI*2); ctx.stroke();
+  ctx.fillStyle='#00ccff'; ctx.font='9px monospace';
+  ctx.fillText('DELIVERY', p4x-24, p4y-14);
+
+  // 원점 축
+  const [ox,oy] = w2p(0,0);
+  ctx.strokeStyle='#cc4444'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(ox,oy); ctx.lineTo(w2p(2,0)[0],oy); ctx.stroke();
+  ctx.strokeStyle='#44cc44';
+  ctx.beginPath(); ctx.moveTo(ox,oy); ctx.lineTo(ox,w2p(0,2)[1]); ctx.stroke();
+  ctx.fillStyle='#cc4444'; ctx.font='bold 11px monospace'; ctx.fillText('X',w2p(2.2,0)[0],oy+4);
+  ctx.fillStyle='#44cc44'; ctx.fillText('Y',ox+3,w2p(0,2.2)[1]);
+}
+
+draw();
+
+// 마우스 좌표 표시
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const px = e.clientX - rect.left;
+  const py = e.clientY - rect.top;
+  const [wx,wy] = p2w(px,py);
+  document.getElementById('info').textContent = `월드 좌표: x=${wx}, y=${wy}`;
+});
+</script>
+</body>
+</html>

@@ -954,6 +954,10 @@ class M0609Agent(BaseRobotAgent):
         self._gripped           = False
 
     def _display_label(self) -> str:
+        if self._state == "WAITING":
+            suffix = self.name.split("_")[-1]
+            return f"Waiting {suffix}_start"
+
         labels = {
             "MOVE_TO_HOME"     : "Moving to Home",
             "Detecting"        : "Detecting...",
@@ -966,7 +970,6 @@ class M0609Agent(BaseRobotAgent):
             "DESCEND_TO_PLACE" : "Placing...",
             "RETRACT_PLACE"    : "Retracting",
             "RETURN_TO_HOME"   : "Returning Home",
-            "WAITING"          : "Waiting A_start",
         }
         return labels.get(self._state, self._state)
 
@@ -1108,7 +1111,6 @@ class M0609Agent(BaseRobotAgent):
             if err < self._home_tol:
                 self._home_return_wps = None
                 if self._pending_wait:
-                    self._wait_signal_count = self._start_signal_count
                     self._state = "WAITING"
                     _suffix = self.name.split("_")[-1]
                     print(f"[{self.name}] 홈 복귀 완료 → WAITING  (/{self.name[0].lower()}{self.name[1:]}/work 에서 '{_suffix}_start' 대기)")
@@ -1256,7 +1258,8 @@ class M0609Agent(BaseRobotAgent):
                     self._pick_count = 0
                     # wait_after_complete=False 이면 WAITING 없이 계속 픽앤플레이스
                     if self.cfg.get("wait_after_complete", True):
-                        self._pending_wait = True  # 홈 복귀 후 WAITING 진입 예약
+                        self._pending_wait = True
+                        self._wait_signal_count = self._start_signal_count  # 제출 시점 기록
                 self._reset_for_next_cycle()
 
 
@@ -1325,5 +1328,4 @@ def _get_world_T(prim_path: str) -> np.ndarray:
         if col_norm > 1e-9:
             T[:3, i] /= col_norm
     return T
-
 

@@ -61,9 +61,9 @@ def _get_ros2_node():
     return _ros2_node
 
 _SENSORS_REL  = "iw_hub_sensors"
-_CORRIDOR_XY  = (-6.0, 1.5)   # 픽업 복귀 후 컨베이어 복귀 중간점
+_CORRIDOR_XY  = (-6.0, 1.55)  # 픽업 복귀 후 컨베이어 복귀 중간점
 _SECTION_STAGING_X = -5.9     # first route gate before section turn
-_SECTION_STAGING_Y = 1.5
+_SECTION_STAGING_Y = 1.55
 _FIRST_ROUTE_Y_XY = (-5.9, 4.3)
 _FIRST_PLACE_XY = (13.1, 4.3)
 _SECOND_ROUTE_TOP_XY = (0.05, 4.3)
@@ -203,7 +203,7 @@ class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgen
     LIFT_DOWN       = 0.0     # 리프트 내림 위치 [m]
     LIFT_STEPS      = 200     # 리프트 대기 FSM 틱 (200 * PUB_EVERY = 2000 physics steps ≈ 4s) — 천천히 올려 포드 넘어짐 방지
     NAV_TOL         = 0.20    # 도착 허용 오차 [m]
-    MAX_V           = 1.25    # 최대 직진 속도 [m/s]
+    MAX_V           = 1.40    # 최대 직진 속도 [m/s]
     MAX_W           = 0.4     # 최대 회전 속도 [rad/s]
     KP_W            = 1.2     # 회전 P게인
     PUB_EVERY       = 10      # cmd_vel 발행 주기 (physics step 수)
@@ -213,7 +213,7 @@ class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgen
     PLACE_TOL       = 0.05    # pod를 내려놓기 전 최종 minimap 허용 오차 [m]
     PLACE_SETTLE_STEPS = 5    # 정지 명령 유지 후 리프트 다운 시작
     AXIS_MIN_V      = 0.055   # small corrections need enough speed to beat static friction
-    FAST_ROUTE_V    = 1.45    # long straight first-drop route speed [m/s]
+    FAST_ROUTE_V    = 1.60    # long straight first-drop route speed [m/s]
     FIRST_DROP_X_TOL = 1.00   # if the hub reaches the drop area, lower without turning
     FIRST_DROP_Y_TOL = 0.40
     FIRST_DROP_MIN_X = 13.0
@@ -256,6 +256,7 @@ class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgen
         self._complete_topic  = self.cfg.get("complete_topic", "/m0609_A/work")
         self._complete_signal = self.cfg.get("complete_signal", "A_complete")
         self._complete_needed = int(self.cfg.get("complete_threshold", self.COMPLETE_NEEDED))
+        self._ros2_work_pub   = None
         self._drop_idx        = 0
         self._fsm_step        = 0
         self._physics_step    = 0
@@ -390,6 +391,7 @@ class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgen
 
             self._ros2_cmd_pub  = node.create_publisher(Twist,      f"/{self.name}/cmd_vel",  10)
             self._ros2_lift_pub = node.create_publisher(JointState, f"/{self.name}/lift_cmd", 10)
+            self._ros2_work_pub = node.create_publisher(String, self._complete_topic, 10)
 
             # odom 구독 — converted into minimap/world frame in _get_xy_hdg().
             def _on_odom(msg):
@@ -766,6 +768,20 @@ class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgen
         with self._complete_lock:
             self._complete_count = 0
 
+    def _publish_start_signal(self) -> None:
+        """Notify the paired M0609 that this IW Hub cycle is complete."""
+        if self._ros2_work_pub is None:
+            print(f"[{self.name}] start signal publish skipped: ROS2 work pub 없음")
+            return
+        try:
+            from std_msgs.msg import String
+            msg = String()
+            msg.data = f"{self._section_name}_start"
+            self._ros2_work_pub.publish(msg)
+            print(f"[{self.name}] ROS2 publish → {self._complete_topic} '{msg.data}'")
+        except Exception as e:
+            print(f"[{self.name}] start signal publish 실패: {e}")
+
     # ── 픽업 모드 전용 헬퍼 ──────────────────────────────────────────
 
     def _build_delivery_slots(self) -> list:
@@ -885,12 +901,14 @@ class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgen
 
     def _drive_minimap_axis_with_heading(self, target: float, axis: str,
                                          heading: float, tol: float = None,
-                                         fast: bool = False) -> bool:
+                                         fast: bool = False,
+                                         max_speed: float = 0.65) -> bool:
         """Drive one minimap axis while holding a fixed heading.
 
         This is for scripted routes where the heading is part of the script.
         It never chooses another yaw from the target. If yaw drifts too much,
         it stops linear motion, corrects angle, then keeps going.
+        max_speed: 직진 최대 속도 상한 [m/s] (pod 진입 시 낮춰서 사용)
         """
         x, y, hdg = self._get_xy_hdg()
         pos = x if axis == "x" else y
@@ -901,7 +919,7 @@ class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgen
             return True
 
         yaw_err = self._angle_err(heading, hdg)
-        if abs(yaw_err) > 0.10:
+        if abs(yaw_err) > 0.15:
             av = max(-self.MAX_W, min(self.MAX_W, self.KP_W * yaw_err))
             self._publish_cmd_vel(0.0, av)
             return False
@@ -915,10 +933,12 @@ class IwHubAgent(SectionAFSM, SectionCFSM, PickupFSM, StandardFSM, BaseRobotAgen
         if fast and abs(err) > 1.0:
             axis_speed = self.FAST_ROUTE_V
         else:
-            axis_speed = max(0.10, min(0.55, abs(err) * 0.65))
+            axis_speed = max(0.05, min(max_speed, abs(err) * 0.65))
         lv = (axis_speed if err >= 0.0 else -axis_speed) / axis_component
         lv = max(-self.FAST_ROUTE_V, min(self.FAST_ROUTE_V, lv))
-        self._publish_cmd_vel(lv, 0.0)
+        # 주행 중에도 heading 오차 비례 보정 — 드리프트 누적 방지
+        av = max(-self.MAX_W * 0.5, min(self.MAX_W * 0.5, self.KP_W * yaw_err))
+        self._publish_cmd_vel(lv, av)
         return False
 
     def _drive_minimap_axis_no_turn(self, target: float, axis: str,

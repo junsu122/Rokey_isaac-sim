@@ -9,7 +9,7 @@ IW Hub 픽업 모드 FSM (iw_hub_02).
 """
 import math
 
-CORRIDOR_XY = (-6.0, 1.5)
+CORRIDOR_XY = (-6.0, 1.55)
 
 
 class PickupFSM:
@@ -235,6 +235,7 @@ class PickupFSM:
             if self._run_lift_phase(up=False):
                 self._delivery_idx = (self._delivery_idx + 1) % max(1, len(self._delivery_slots))
                 self._reset_dock_pid()
+                self._publish_start_signal()
                 self._pickup_state = "WAITING"
                 self._fsm_step     = 0
                 print(f"[{self.name}] LOWERING_OUT → WAITING  supply={self._pickup_xy}")
@@ -243,6 +244,7 @@ class PickupFSM:
             hx, hy = self._home_xy
             if self._nav_axis_aligned(hx, hy):
                 self._reset_dock_pid()
+                self._publish_start_signal()
                 self._pickup_state = "WAITING"
                 self._fsm_step     = 0
                 print(f"[{self.name}] RETREAT → WAITING  (cycle #{self._drop_idx})")
