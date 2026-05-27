@@ -37,8 +37,8 @@ class MoveToPointNode(Node):
         self.declare_parameter('robot_name', 'iw_hub_01')
         self.declare_parameter('target_x', 0.0)
         self.declare_parameter('target_y', 0.0)
-        self.declare_parameter('max_linear_speed', 1.5)
-        self.declare_parameter('max_angular_speed', 2.0)
+        self.declare_parameter('max_linear_speed', 3.5)
+        self.declare_parameter('max_angular_speed', 0.8)
         self.declare_parameter('distance_tolerance', 0.12)
         self.declare_parameter('yaw_tolerance', 0.15)
 

@@ -15,7 +15,7 @@ _DRONE = _BASE / "robots" / "drone"     # main_isaac/robots/drone/
 _IWHUB = _BASE / "robots" / "iw_hub"   # main_isaac/robots/iw_hub/
 
 # ── 경로 설정 ─────────────────────────────────────────────────────────
-WAREHOUSE_USD     = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/warehouse_v7_1.usda"
+WAREHOUSE_USD     = str(_BASE / "usd" / "warehouse_v7_1.usda")
 SPOT_SRC_DIR      = str(_SPOT  / "spot_test")
 M0609_SRC_DIR     = str(_M0609 / "m0609_aruco_detect")
 
@@ -77,25 +77,25 @@ USE_REALSENSE = True
 # ── ArUco 마커 박스 설정 ─────────────────────────────────────────────
 #
 #  type    : "green_id0" | "red_id1" | "blue_id2"
-#  xyz     : 스폰 위치 (x, y, z) [m]  ← 이 값을 수정해 위치 조정
+#  xyz     : 스폰 위치 (x, y, z) [m]  — 컨베이어 벨트(-16, 0) 위, 순서대로 배치
 #
-_ARUCO_USD_DIR = "/home/rokey/Rokey_isaac-sim/aruco_marker_box/usd"
+_ARUCO_USD_DIR = str(_BASE / "aruco_marker_box" / "usd")
 
 ARUCO_BOXES = [
     {
         "type": "green_id0",
         "usd" : _ARUCO_USD_DIR + "/aruco_box_green_id0.usda",
-        "xyz" : (-13.0, 9.5, 1.0),   # ★ M0609_A 앞 큐브 위치
+        "xyz" : (-16.0, -0.4, 1.0),   # 컨베이어 위 #1 (id0)
     },
     {
         "type": "red_id1",
         "usd" : _ARUCO_USD_DIR + "/aruco_box_red_id1.usda",
-        "xyz" : (-7.88, 1.64, 1.0),   # ★ M0609_B 앞 큐브 위치
+        "xyz" : (-16.0,  0.0, 1.0),   # 컨베이어 위 #2 (id1)
     },
     {
         "type": "blue_id2",
         "usd" : _ARUCO_USD_DIR + "/aruco_box_blue_id2.usda",
-        "xyz" : (-9.63, -9.38, 1.0),  # ★ M0609_C 앞 큐브 위치
+        "xyz" : (-16.0,  0.4, 1.0),   # 컨베이어 위 #3 (id2)
     },
 ]
 
@@ -105,101 +105,143 @@ ARUCO_BOXES = [
 #  xyz  : 스폰 위치 (x, y, z) [m]  ← 이 값을 수정해 위치 조정
 #  yaw  : 회전각 deg (Z축 기준, 기본 0)
 #
-_POD_USD = "/home/rokey/Rokey_isaac-sim/main_isaac/usd/pot_v1.usda"
+_POD_USD = str(_BASE / "usd" / "pot_v1.usda")
+POD_USD  = _POD_USD   # public alias used by minimap.py
 
 POD_STACKS = [
-    {"name": "PodStack_01", "usd": _POD_USD, "xyz": (-12.8, 9.0, 0.0), "yaw": 0.0},  # ★
-    {"name": "PodStack_02", "usd": _POD_USD, "xyz": (-8.2, 1.5, 0.0), "yaw": 0.0},  # ★
-    {"name": "PodStack_03", "usd": _POD_USD, "xyz": (-9.7, -8.9, 0.0), "yaw": 0.0},  # ★
+    {"name": "PodStack_01", "usd": _POD_USD, "xyz": (-12.8,  9.0, 0.0), "yaw": 0.0},  # IW Hub A 홈
+    {"name": "PodStack_02", "usd": _POD_USD, "xyz": ( -8.2,  1.5, 0.0), "yaw": 0.0},  # IW Hub B 홈
+    {"name": "PodStack_03", "usd": _POD_USD, "xyz": ( -9.7, -8.9, 0.0), "yaw": 0.0},  # IW Hub C 홈
+    {"name": "PodStack_04", "usd": _POD_USD, "xyz": ( 12.0, 14.0, 0.0), "yaw": 0.0},  # 드론 배달 목적지
 ]
+
+# ── Section Pod Stacks (A / B / C  3×3 슬롯) ─────────────────────────
+SECTION_POD_USD = _POD_USD
+
+
+def _make_grid(cx: float, cy: float,
+               cols: int = 3, rows: int = 3,
+               dx: float = 3.5, dy: float = 3.0,
+               z: float = 0.0) -> list:
+    xs = [cx + (c - (cols - 1) / 2.0) * dx for c in range(cols)]
+    ys = [cy + (r - (rows - 1) / 2.0) * dy for r in range(rows)]
+    return [(round(x, 3), round(y, 3), z) for y in ys for x in xs]
+
+
+SECTION_PODS = {
+    "A": _make_grid(0.0,  10.0),   # Sec A: slot01=(-3.5,  7.0), reserved empty
+    "B": _make_grid(0.0,   0.0),   # Sec B: slot01=(-3.5, -3.0), reserved empty
+    "C": _make_grid(0.0, -10.0),   # Sec C: slot01=(-3.5,-13.0), reserved empty
+}
 
 ROBOT_REGISTRY = [
 
     # ── Drone #1 ────────────────────────────────────────────────────
-    # 위치: 창고 내 원하는 위치
-    # 역할: 키보드/조이스틱 자유 비행 + 깊이 카메라 HUD
-    # {
-    #     "type"        : "drone",
-    #     "name"        : "Drone_01",
-    #     "spawn_xyz"   : (0.0, 0.0, 2.2),
-    #     "spawn_yaw"   : 0.0,
-    #     "takeoff_alt" : 1.5,               # 선택 (기본값)
-    # },
+    {
+        "type"        : "drone",
+        "name"        : "Drone_01",
+        "spawn_xyz"   : (-16.0, -16.0, 0.07),
+        "spawn_yaw"   : 0.0,
+        "takeoff_alt" : 2.5,
+        # 드론 자율 미션: 각 섹션의 지정 슬롯 포드를 집어서 배달지(12,14)로 운반
+        # 슬롯 번호는 세계 좌표 기준 1-indexed (슬롯 01은 비어 있음)
+        "section_targets" : {"A": 3, "B": 2, "C": 3},
+        "delivery_xyz"    : (12.0, 14.0, 0.0),
+    },
 
-    # ── Spot #1 ─────────────────────────────────────────────────────
-    # 위치: 창고 중앙 통로
-    # 역할: 웨이포인트 순찰 → ArUco ID 감지 → 박스 픽업 → ID별 목표로 이동
-    # {
-    #     "type"      : "spot",
-    #     "name"      : "Spot_01",
-    #     "spawn_xyz" : ( 4.15,  7.0, 0.7),   # ★ 스폰 (x, y, z)
-    #     "spawn_yaw" : 0.0,                   # ★ 초기 방향 (deg)
-    #     #
-    #     # ── 순찰 웨이포인트 [(x, y), ...] [m] ───────────────────────
-    #     # 이 순서대로 순환 주행합니다. 미지정 시 스폰 주변 기본 경로 사용.
-    #     # ★ 좌표를 자유롭게 추가/수정/삭제 가능
-    #     "waypoints": [
-    #         ( 4.15, 7.0),   # wp0 ← ★
-    #         ( 1.15, 7.0),   # wp1 ← ★
-    #         ( 1.15, 13.0),   # wp2 ← ★
-    #         ( 4.15, 13.0),   # wp3 ← ★
-    #     ],
-    #     #
-    #     # ── ArUco ID별 목표 XY 위치 ─────────────────────────────────
-    #     # ArUco ID 에 해당하는 박스를 집은 뒤 이 좌표로 이동해 내려놓습니다.
-    #     # 키: ArUco ID (int), 값: (x, y) [m]  ← ★ 이 값을 수정해 목표 위치 조정
-    #     "aruco_goals": {
-    #         0: ( -3.0,  15.15),   # green_id0 → 목표 A  ← ★
-    #         1: ( 0.0,  15.15),   # red_id1   → 목표 B  ← ★
-    #         2: ( 3.0, 15.15),   # blue_id2  → 목표 C  ← ★
-    #     },
-    # },
+    # ── Spot #1 — Section A+B 순찰 (A와 B 사이 시작) ─────────────────────
+    # 경로: x=±4.5 (pod x범위 ±2.8보다 1.7m 바깥),
+    #       y=14.5 (SecA 최상단 pod y=13.0보다 1.5m 위),
+    #       y=-4.7 (SecB 최하단 pod y=-3.2보다 1.5m 아래)
+    {
+        "type"      : "spot",
+        "name"      : "Spot_01",
+        "spawn_xyz" : ( 0.2,  4.8, 0.7),
+        "spawn_yaw" : 0.0,
+        "waypoints": [
+            ( 4.5,  5.0),
+            ( 4.5, 14.5),
+            ( 0.0, 14.5),
+            (-4.5, 14.5),
+            (-4.5,  5.0),
+            (-4.5, -4.7),
+            ( 0.0, -4.7),
+            ( 4.5, -4.7),
+        ],
+        "aruco_goals": {
+            0: (-2.8,  14.5),
+            1: ( 0.0,  14.5),
+            2: ( 2.8,  14.5),
+        },
+    },
 
-    # # ── Spot #2 ─────────────────────────────────────────────────────
-    # {
-    #     "type"      : "spot",
-    #     "name"      : "Spot_02",
-    #     "spawn_xyz" : ( -4.1, 13.0, 0.7),
-    #     "spawn_yaw" : 0.0,
-    #     #
-    #     # ── 순찰 웨이포인트 [(x, y), ...] [m] ───────────────────────
-    #     # 이 순서대로 순환 주행합니다. 미지정 시 스폰 주변 기본 경로 사용.
-    #     # ★ 좌표를 자유롭게 추가/수정/삭제 가능
-    #     "waypoints": [
-    #         ( -4.1, 13.0),   # wp2 ← ★
-    #         ( -1.3, 13.0),   # wp3 ← ★
-    #         ( -1.3,  7.0),   # wp0 ← ★
-    #         ( -4.1,  7.0),   # wp1 ← ★
-    #     ],
-    #     #
-    #     # ── ArUco ID별 목표 XY 위치 ─────────────────────────────────
-    #     # ArUco ID 에 해당하는 박스를 집은 뒤 이 좌표로 이동해 내려놓습니다.
-    #     # 키: ArUco ID (int), 값: (x, y) [m]  ← ★ 이 값을 수정해 목표 위치 조정
-    #     "aruco_goals": {
-    #         0: ( -3.0,  15.15),   # green_id0 → 목표 A  ← ★
-    #         1: ( 0.0,  15.15),   # red_id1   → 목표 B  ← ★
-    #         2: ( 3.0, 15.15),   # blue_id2  → 목표 C  ← ★
-    #     },
-    # },
+    # ── Spot #2 — Section B+C 순찰 (B와 C 사이 시작) ─────────────────────
+    # 경로: x=±4.5 (pod x범위 ±2.8보다 1.7m 바깥),
+    #       y=4.3  (SecB 최상단 pod y=2.8보다 1.5m 위),
+    #       y=-14.5 (SecC 최하단 pod y=-13.0보다 1.5m 아래)
+    {
+        "type"      : "spot",
+        "name"      : "Spot_02",
+        "spawn_xyz" : ( 0.0, -5.5, 0.7),
+        "spawn_yaw" : 0.0,
+        "waypoints": [
+            ( 4.5, -4.7),
+            ( 4.5,-14.5),
+            ( 0.0,-14.5),
+            (-4.5,-14.5),
+            (-4.5, -4.7),
+            (-4.5,  4.3),
+            ( 0.0,  4.3),
+            ( 4.5,  4.3),
+        ],
+        "aruco_goals": {
+            0: (-2.8, -14.5),
+            1: ( 0.0, -14.5),
+            2: ( 2.8, -14.5),
+        },
+    },
 
-    # ── IW Hub #1 ───────────────────────────────────────────────────
-    # 역할: 물품 이송 (이동은 ROS2 /cmd_vel 토픽으로 제어)
-    # 이름은 ROS2 토픽과 일치해야 한다: /iw_hub_01/cmd_vel, /iw_hub_01/odom
-    # {
-    #     "type"      : "iw_hub",
-    #     "name"      : "iw_hub_01",
-    #     "spawn_xyz" : (0.0, -2.0, 0.0),   # ★ 스폰 위치
-    #     "spawn_yaw" : 0.0,
-    # },
+    # ── IW Hub #1 ─ PodStack_01 위치, Section A 배달 ──────────────────────
+    {
+        "type"            : "iw_hub",
+        "name"            : "iw_hub_01",
+        "spawn_xyz"       : (-12.8, 14.0, -0.14),
+        "spawn_yaw"       : 90.0,
+        "section"         : "A",
+        "complete_topic"  : "/m0609_A/work",
+        "complete_signal" : "A_complete",
+        "complete_threshold": 1,
+    },
 
-    # # ── IW Hub #2 ───────────────────────────────────────────────────
-    # # 이름은 ROS2 토픽과 일치해야 한다: /iw_hub_02/cmd_vel, /iw_hub_02/odom
-    # {
-    #     "type"      : "iw_hub",
-    #     "name"      : "iw_hub_02",
-    #     "spawn_xyz" : (0.0, 2.0, 0.0),   # ★ 스폰 위치
-    #     "spawn_yaw" : 0.0,
-    # },
+    # ── IW Hub #2 ─ 픽업 모드: 포드스택 집어 Section B 슬롯으로 배달 ────────
+    # 흐름: spawn(-6.45,1.5) → 트리거 → X이동→pickup(-7.9,1.5) → 리프트업
+    #        → 통로(-6.0,1.5) → Y이동→X이동 → 슬롯01 → 리프트다운
+    #        → 후진 이탈 → 다음 섹션 pod 픽업 → conveyor 옆 pickup 위치로 복귀
+    {
+        "type"            : "iw_hub",
+        "name"            : "iw_hub_02",
+        "spawn_xyz"       : (-6.45, 1.5, -0.14),
+        "spawn_yaw"       : 0.0,
+        "mode"            : "pickup",
+        "pickup_xyz"      : (-7.9, 1.5),
+        "section"         : "B",
+        "complete_topic"  : "/m0609_B/work",
+        "complete_signal" : "B_complete",
+        "complete_threshold": 1,
+    },
+
+    # ── IW Hub #3 ─ PodStack_03 에서 +x 1m 오프셋, Section C 배달 ──────────
+    # PodStack_03(-9.7,-8.9) 과 겹치면 Section C pod 스택 물리 충돌 → +1m 오프셋
+    {
+        "type"            : "iw_hub",
+        "name"            : "iw_hub_03",
+        "spawn_xyz"       : (-9.7, -13.0, -0.14),
+        "spawn_yaw"       : -90.0,
+        "section"         : "C",
+        "complete_topic"  : "/m0609_C/work",
+        "complete_signal" : "C_complete",
+        "complete_threshold": 1,
+    },
 
     # ── M0609 #1 ────────────────────────────────────────────────────
     # 위치: 창고 서측 작업 스테이션 A
@@ -215,7 +257,8 @@ ROBOT_REGISTRY = [
         "aruco_box_wh": (0.30, 0.30),           # zone2 박스 bw=0.3 bd=0.3
         "waypoint_xyz"      : (-11.3, 8.7, 1.5),
         "pick_z_offset"     : -0.1,   # ★ 픽 Z 추가 오프셋 (음수=더 아래, m)
-        "work_complete_count": 3,     # ★ 이 횟수만큼 픽앤플레이스 후 complete publish → WAITING
+        "work_complete_count": 3,     # ★ 3회 픽앤플레이스마다 IW Hub 트리거 신호 발행
+        "wait_after_complete": False, # ★ 신호 발행 후 WAITING 진입 없이 계속 감지
         # "pad_reach"        : 0.144,  # ★ EE→흡착패드끝 거리(m)
         # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
         # "home_return_steps": 150,    # ★ 홈복귀 속도 (↓값=빠름, 기본 250=0.5초)
@@ -233,7 +276,8 @@ ROBOT_REGISTRY = [
         "aruco_box_wh": (0.25, 0.25),           # zone1 박스 bw=0.25 bd=0.25
         "waypoint_xyz"      : (-8.7, 0.0, 1.5),
         "pick_z_offset"     : -0.1,   # ★ 픽 Z 추가 오프셋 (음수=더 아래, m)
-        "work_complete_count": 3,     # ★ 이 횟수만큼 픽앤플레이스 후 complete publish → WAITING
+        "work_complete_count": 1,     # ★ 1회 픽앤플레이스마다 IW Hub 트리거 신호 발행
+        "wait_after_complete": False, # ★ 신호 발행 후 WAITING 진입 없이 계속 감지
         # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
     },
 
@@ -250,7 +294,8 @@ ROBOT_REGISTRY = [
         "waypoint_xyz"      : (-11.3, -8.7, 1.5),
         "pad_reach"         : 0.2,    # ★ EE→흡착패드끝 거리(m). 미지정 시 (stem+pad)×scale 자동계산
         "pick_z_offset"     : -0.1,   # ★ 픽 Z 추가 오프셋 (음수=더 아래, m)
-        "work_complete_count": 3,     # ★ 이 횟수만큼 픽앤플레이스 후 complete publish → WAITING
+        "work_complete_count": 3,     # ★ 3회 픽앤플레이스마다 IW Hub 트리거 신호 발행
+        "wait_after_complete": False, # ★ 신호 발행 후 WAITING 진입 없이 계속 감지
         # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
     },
 
