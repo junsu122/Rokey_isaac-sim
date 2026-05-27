@@ -6,7 +6,7 @@ main_isaac/minimap.py
 기능:
   - IW Hub, M0609, ArUco 박스, Pod Stack 위치 실시간 표시
   - IW Hub 미션 상태 라벨 표시 (GOTO_STACK / LIFTING / GOTO_DROP / LOWERING)
-  - 미니맵 우클릭 → Isaac Sim 에 Pod Stack 동적 스폰
+  - 미니맵 우클릭 → Spot gripper용 소형 ArUco 박스 동적 스폰
   - 빨간 배달 라인(x = -7.5) 표시
 
 Isaac Sim 번들 Python 은 cv2 GUI를 지원하지 않으므로
@@ -599,36 +599,44 @@ class Minimap:
             except subprocess.TimeoutExpired:
                 self._proc.kill()
 
-    # ── Pod 스폰 ────────────────────────────────────────────────────
+    # ── 우클릭 ArUco 박스 스폰 ───────────────────────────────────────
 
     def _spawn_pod(self, wx: float, wy: float) -> None:
-        """우클릭 좌표에 Pod Stack 을 Isaac Sim 에 스폰한다."""
+        """우클릭 좌표에 Spot gripper용 소형 ArUco 박스를 스폰한다."""
         try:
-            from pxr import Sdf
+            from auto_spawn_panel import _create_box_with_aruco
             stage = omni.usd.get_context().get_stage()
             self._pod_counter += 1
-            prim_path = f"/World/PodStacks/ClickPod_{self._pod_counter:03d}"
+            prim_path = f"/World/MinimapClickBoxes/ClickBox_{self._pod_counter:03d}"
 
-            # /World/PodStacks 가 없으면 생성
-            pods_root = stage.GetPrimAtPath("/World/PodStacks")
-            if not pods_root or not pods_root.IsValid():
+            root = stage.GetPrimAtPath("/World/MinimapClickBoxes")
+            if not root or not root.IsValid():
                 from pxr import UsdGeom as _UG
-                _UG.Xform.Define(stage, "/World/PodStacks")
+                _UG.Xform.Define(stage, "/World/MinimapClickBoxes")
 
-            prim = stage.DefinePrim(prim_path, "Xform")
-            prim.GetReferences().AddReference(C.POD_USD)
-
-            xf = UsdGeom.Xformable(prim)
-            xf.ClearXformOpOrder()
-            xf.AddTranslateOp().Set(Gf.Vec3d(wx, wy, 0.0))
-            xf.AddRotateXYZOp().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-            xf.AddScaleOp().Set(Gf.Vec3f(1.0, 1.0, 1.0))
-            stage.Load(prim_path)
+            # Small enough for Spot gripper; ArUco ID cycles 0,1,2.
+            bw, bd, bh = 0.16, 0.16, 0.10
+            aruco_id = (self._pod_counter - 1) % 3
+            colors = {
+                0: (0.2, 0.8, 0.2),
+                1: (0.8, 0.2, 0.2),
+                2: (0.2, 0.4, 0.9),
+            }
+            _create_box_with_aruco(
+                prim_path=prim_path,
+                x_m=float(wx), y_m=float(wy), z_m=bh / 2.0,
+                bw=bw, bd=bd, bh=bh,
+                color_rgb=colors[aruco_id],
+                mass=0.5,
+                orientation_wxyz=(1.0, 0.0, 0.0, 0.0),
+                aruco_id=aruco_id,
+            )
 
             self._click_pods.append((wx, wy, prim_path))
-            print(f"[Minimap] Pod 스폰: {prim_path}  wx={wx:.2f}  wy={wy:.2f}")
+            print(f"[Minimap] ArUco box 스폰: {prim_path}  "
+                  f"id={aruco_id}  wx={wx:.2f}  wy={wy:.2f}")
         except Exception as e:
-            print(f"[Minimap] Pod 스폰 실패: {e}")
+            print(f"[Minimap] ArUco box 스폰 실패: {e}")
 
     # ── 내부 전송 스레드 ─────────────────────────────────────────────
 

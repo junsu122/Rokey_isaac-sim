@@ -5,7 +5,7 @@ main_isaac/world_setup.py
 
 ArUco 박스는 BoxSpawner 가 20초 간격으로 컨베이어 위에 동적 스폰한다.
 섹션 A/B/C 의 슬롯 #01 은 IW Hub 배달 예약 슬롯으로 비워둔다.
-각 섹션 슬롯 10~12 (3개) 에 드론 픽업용 ArUco 박스가 사전 배치된다.
+각 섹션 슬롯 07~09 (3개) 에 드론 픽업용 ArUco 박스가 사전 배치된다.
 """
 import omni.usd
 from pxr import Sdf, Gf, UsdGeom, UsdPhysics
@@ -15,8 +15,8 @@ from robot_config import (
     ARUCO_BOXES, RENDERING_DT,
 )
 
-# 드론 픽업용 박스 슬롯: 12-slot section 안쪽의 후반 슬롯 10~12
-_SECTION_BOX_SLOTS = list(range(10, 13))
+# 드론 픽업용 박스 슬롯: 9-slot section 안쪽의 후반 슬롯 07~09
+_SECTION_BOX_SLOTS = list(range(7, 10))
 # 적층 박스 Z 위치 (선반 top=0.265m, 박스 높이=0.30m):
 #   하단: 0.265+0.15=0.415m  중단: 0.715m  상단: 1.015m (케이지 개구부 위로 10cm 돌출)
 _SECTION_BOX_Z_STACK = [0.415, 0.715, 1.015]
@@ -70,7 +70,7 @@ def setup_warehouse(world) -> None:
 
         print(f"[WorldSetup] Pod Stack 로드: {pod['name']}  pos={pod['xyz']}")
 
-    # Section A / B / C  12-slot 격자 — 슬롯 #01 은 IW Hub 배달용으로 비워둠
+    # Section A / B / C  9-slot 격자 — 슬롯 #01 은 IW Hub 배달용으로 비워둠
     for sec_name, positions in SECTION_PODS.items():
         count = 0
         for i, xyz in enumerate(positions, start=1):
@@ -84,14 +84,14 @@ def setup_warehouse(world) -> None:
             count += 1
 
         print(f"[WorldSetup] Section {sec_name} Pod Stack {count}개 스폰 완료 "
-              f"(12 슬롯 중 슬롯 01 비워둠)")
+              f"(9 슬롯 중 슬롯 01 비워둠)")
 
-    # 섹션 박스 사전 배치 (드론 픽업용: 슬롯 10/15/20)
+    # 섹션 박스 사전 배치 (드론 픽업용: 슬롯 07/08/09)
     _spawn_section_boxes(stage)
 
 
 def _spawn_section_boxes(stage) -> None:
-    """섹션 A/B/C 의 슬롯 10~12 각 pod 에 30cm ArUco 박스 3개 적층 배치.
+    """섹션 A/B/C 의 슬롯 07~09 각 pod 에 30cm ArUco 박스 3개 적층 배치.
 
     적층 구조 (하→상):
       _b1 : z=0.415m (선반 위)
@@ -118,7 +118,7 @@ def _spawn_section_boxes(stage) -> None:
         color_rgb = info["color"]
 
         for slot in _SECTION_BOX_SLOTS:
-            pos_idx = slot - 1      # 0-based: slot 10 → index 9
+            pos_idx = slot - 1      # 0-based: slot 07 → index 6
             if pos_idx >= len(positions):
                 continue
 
@@ -141,7 +141,7 @@ def _spawn_section_boxes(stage) -> None:
                 spawned += 1
 
     print(f"[WorldSetup] 섹션 박스 {spawned}개 사전 배치 완료 "
-          f"(슬롯 10~12, 3개 적층×섹션 A/B/C, 30cm ArUco)")
+          f"(슬롯 07~09, 3개 적층×섹션 A/B/C, 30cm ArUco)")
 
 
 # ══════════════════════════════════════════════════════════════════════

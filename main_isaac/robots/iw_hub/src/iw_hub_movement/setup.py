@@ -21,6 +21,7 @@ setup(
         'console_scripts': [
             'move_to_point = iw_hub_movement.move_to_point:main',
             'axis_nav      = iw_hub_movement.axis_nav:main',
+            'manual_console = iw_hub_movement.manual_console:main',
         ],
     },
 )

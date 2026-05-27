@@ -95,11 +95,11 @@ _CROUCH_DEG = {
     "hr_hx": -20.0,  "hr_hy":  63.11, "hr_kn": -86.11,
 }
 
-_MIN_AREA           = 300    # ArUco 마커 최소 픽셀 면적 (너무 작으면 무시)
+_MIN_AREA           = 20     # small/far click-spawn boxes still need to be detected
 _GOAL_ZONE_HALF     = 1.5    # 목표 영역 반변 길이 (m) — 3×3 m 초록 사각형 기준
 _STOP_DIST      = 0.65
 _APPROACH_DIST  = 1.2
-_HOME_DIST      = 0.45
+_HOME_DIST      = 0.75
 _LOWER_STEPS    = 300
 _RAISE_STEPS    = 300
 _DETECT_EVERY   = 10
@@ -114,24 +114,83 @@ _DETOUR_FWD      = 2.0   # 우회 시 진행 방향 전방 오프셋 [m] — 정
 _DETOUR_COOLDOWN = 300   # 우회 완료 후 재우회 검사 전 대기 FSM 틱 수 (≈ 6 s)
 
 # ── pod 섹션 금지 구역 (Spot 진입 불가) ──────────────────────────────────
-# 각 섹션 pod 좌표 범위 + 1.0m 마진 (로봇 반폭 0.5m + 안전 여유)
+# 각 섹션 pod 좌표 범위 + 넓은 마진 (로봇 반폭 + 회전/흔들림 여유)
 # Section A: cy=10.0, Section B: cy=0.0, Section C: cy=-10.0
-# pod x: ±2.7 (center ± 1.5*dx/2=1.35) → 마진 포함 ±3.8
-# pod y: ±3.0 from cy (center ± 2*dy=3.0) → 마진 포함 cy±4.2
-_POD_ZONE_HALF_X = 3.8
+# pod x: ±2.8 → 마진 포함 ±5.2
+# pod y: ±2.0 from cy → 마진 포함 cy±3.8, leaving marker lanes reachable
+_POD_ZONE_HALF_X = 5.2
 _POD_ZONE_CENTERS_Y = (10.0, 0.0, -10.0)
-_POD_ZONE_HALF_Y = 4.2
+_POD_ZONE_HALF_Y = 3.8
+_WALL_SAFE_Y = 14.6
+_CONVEYOR_ZONES = [
+    (12.2, 20.8, -10.95, -10.05),
+    (12.2, 20.8,  -0.45,   0.45),
+    (12.2, 20.8,  10.05,  10.95),
+    (-20.0, -11.8, -0.45, 0.45),
+    (-13.8, -11.8, -3.2, -1.5),
+    (-13.8, -11.8,  1.5,  3.2),
+    (-12.2, -10.4, -8.7, -6.9),
+    (-10.4,  -8.6, -0.9,  0.9),
+]
 
 
 def _clamp_clear_of_pods(xy: np.ndarray) -> np.ndarray:
-    """목표점이 pod 섹션 금지 구역 안에 있으면 가장 가까운 외곽으로 밀어낸다."""
-    x, y = float(xy[0]), float(xy[1])
+    """목표점이 pod/컨베이어 금지 구역 안에 있으면 가장 가까운 외곽으로 밀어낸다."""
+    x, y = float(xy[0]), max(-_WALL_SAFE_Y, min(_WALL_SAFE_Y, float(xy[1])))
     for cy in _POD_ZONE_CENTERS_Y:
         if abs(x) < _POD_ZONE_HALF_X and abs(y - cy) < _POD_ZONE_HALF_Y:
             # x 방향으로 가장 짧은 이탈 경로 사용
             safe_x = math.copysign(_POD_ZONE_HALF_X + 0.2, x if x != 0 else 1.0)
             return np.array([safe_x, y], dtype=np.float64)
+    for x0, x1, y0, y1 in _CONVEYOR_ZONES:
+        if x0 < x < x1 and y0 < y < y1:
+            candidates = [
+                np.array([x0 - 0.35, y], dtype=np.float64),
+                np.array([x1 + 0.35, y], dtype=np.float64),
+                np.array([x, y0 - 0.35], dtype=np.float64),
+                np.array([x, y1 + 0.35], dtype=np.float64),
+            ]
+            return min(candidates, key=lambda p: float(np.linalg.norm(p - xy[:2])))
     return xy
+
+
+def _segment_hits_pod_zone(a: np.ndarray, b: np.ndarray) -> bool:
+    """True if a straight Spot route would cross any pod/conveyor no-go box."""
+    ax, ay = float(a[0]), float(a[1])
+    bx, by = float(b[0]), float(b[1])
+    zones = [
+        (-_POD_ZONE_HALF_X, _POD_ZONE_HALF_X,
+         cy - _POD_ZONE_HALF_Y, cy + _POD_ZONE_HALF_Y)
+        for cy in _POD_ZONE_CENTERS_Y
+    ] + _CONVEYOR_ZONES
+    for min_x, max_x, min_y, max_y in zones:
+        if max(ax, bx) < min_x or min(ax, bx) > max_x:
+            continue
+        if max(ay, by) < min_y or min(ay, by) > max_y:
+            continue
+        if min_x < ax < max_x and min_y < ay < max_y:
+            return True
+        if min_x < bx < max_x and min_y < by < max_y:
+            return True
+        steps = max(8, int(np.linalg.norm(b[:2] - a[:2]) / 0.25))
+        for t in np.linspace(0.0, 1.0, steps):
+            x = ax + (bx - ax) * float(t)
+            y = ay + (by - ay) * float(t)
+            if min_x < x < max_x and min_y < y < max_y:
+                return True
+    return False
+
+
+def _pod_safe_detour(pos_xy: np.ndarray, target_xy: np.ndarray) -> np.ndarray:
+    """Return an outside-edge detour when direct travel would cross pods."""
+    target_xy = _clamp_clear_of_pods(np.array(target_xy, dtype=np.float64))
+    if not _segment_hits_pod_zone(pos_xy, target_xy):
+        return target_xy
+    side_seed = pos_xy[0] if abs(pos_xy[0]) > 0.2 else target_xy[0]
+    safe_x = math.copysign(_POD_ZONE_HALF_X + 0.6, side_seed if side_seed != 0 else 1.0)
+    if abs(pos_xy[0]) < _POD_ZONE_HALF_X + 0.3:
+        return np.array([safe_x, float(pos_xy[1])], dtype=np.float64)
+    return np.array([safe_x, target_xy[1]], dtype=np.float64)
 
 
 class SpotAgent(BaseRobotAgent):
@@ -279,6 +338,8 @@ class SpotAgent(BaseRobotAgent):
         self._detected_aruco_id = None   # 감지된 ArUco ID
         self._goal_xy           = None   # ID에 대응하는 목표 XY
         self._grip_box_path     = None   # 잡고 있는 AutoBox prim 경로
+        self._delivered_box_paths = set()
+        self._pickup_cooldown   = 0
         self._det_cnt           = 0
         self._warmup_cnt        = 0
         self._stab_cnt          = 0
@@ -543,13 +604,22 @@ class SpotAgent(BaseRobotAgent):
         return np.mean(pts, axis=0) if pts else self._g_world_pos.copy()
 
     def _find_nearest_autobox(self, spot_xy: np.ndarray,
-                               max_dist: float = 6.0):
-        """스팟 XY 기준 가장 가까운 미픽업 AutoBox prim 경로와 XY를 반환."""
+                               max_dist: float = 6.0,
+                               skip_goal_zones: bool = False):
+        """스팟 XY 기준 가장 가까운 미픽업 박스 prim 경로와 XY를 반환."""
         stage = omni.usd.get_context().get_stage()
         best_path, best_xy, best_dist = None, None, max_dist
         for prim in stage.Traverse():
             path = str(prim.GetPath())
-            if not path.startswith("/World/AutoBox_"):
+            if not (
+                path.startswith("/World/AutoBox_") or
+                path.startswith("/World/DynamicBoxes/") or
+                path.startswith("/World/MinimapClickBoxes/")
+            ):
+                continue
+            if prim.GetCustomDataByKey("spot_delivered"):
+                continue
+            if path in self._delivered_box_paths:
                 continue
             if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
                 continue
@@ -559,6 +629,8 @@ class SpotAgent(BaseRobotAgent):
             mat = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
             T   = np.array(mat, dtype=np.float64).T
             xy  = T[:2, 3]
+            if skip_goal_zones and self._is_in_goal_zone(xy):
+                continue
             d   = float(np.linalg.norm(xy - spot_xy))
             if d < best_dist:
                 best_dist, best_path, best_xy = d, path, xy.copy()
@@ -579,7 +651,8 @@ class SpotAgent(BaseRobotAgent):
         """
         try:
             pos, _ = self._get_pos_yaw()
-            path, _ = self._find_nearest_autobox(pos[:2], max_dist=2.0)
+            path, _ = self._find_nearest_autobox(
+                pos[:2], max_dist=2.0, skip_goal_zones=True)
             if path is None:
                 print(f"[{self.name}] 근처 AutoBox 없음 (2m 내)")
                 return
@@ -614,12 +687,15 @@ class SpotAgent(BaseRobotAgent):
         """AutoBox physics 복원 + collision 재활성화 → 낙하."""
         if self._grip_box_path is None:
             return
+        released_path = self._grip_box_path
         stage = omni.usd.get_context().get_stage()
-        prim  = stage.GetPrimAtPath(self._grip_box_path)
+        prim  = stage.GetPrimAtPath(released_path)
         if prim.IsValid() and prim.HasAPI(UsdPhysics.RigidBodyAPI):
             self._set_box_collision(prim, True)          # collision 복원
             UsdPhysics.RigidBodyAPI(prim).GetKinematicEnabledAttr().Set(False)
-        print(f"[{self.name}] AutoBox 해제 (collision ON → 낙하): {self._grip_box_path}")
+            prim.SetCustomDataByKey("spot_delivered", True)
+        self._delivered_box_paths.add(released_path)
+        print(f"[{self.name}] AutoBox 해제 (collision ON → 낙하): {released_path}")
         self._grip_box_path = None
 
     # ── ArUco 탐지 ────────────────────────────────────────────────────
@@ -631,6 +707,40 @@ class SpotAgent(BaseRobotAgent):
                     abs(xy[1] - goal_xy[1]) < _GOAL_ZONE_HALF):
                 return True
         return False
+
+    def _is_goal_occupied(self, goal_xy: np.ndarray,
+                          ignore_path: str = None) -> bool:
+        """True if a box is already sitting in this marker zone."""
+        stage = omni.usd.get_context().get_stage()
+        for prim in stage.Traverse():
+            path = str(prim.GetPath())
+            if ignore_path is not None and path == ignore_path:
+                continue
+            if not (
+                path.startswith("/World/AutoBox_") or
+                path.startswith("/World/DynamicBoxes/") or
+                path.startswith("/World/MinimapClickBoxes/")
+            ):
+                continue
+            if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                continue
+            mat = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+            T = np.array(mat, dtype=np.float64).T
+            xy = T[:2, 3]
+            if (abs(xy[0] - goal_xy[0]) < _GOAL_ZONE_HALF and
+                    abs(xy[1] - goal_xy[1]) < _GOAL_ZONE_HALF):
+                return True
+        return False
+
+    def _select_goal_for_box(self, aruco_id: int, box_path: str = None) -> np.ndarray:
+        """Use the requested ArUco marker if empty, otherwise choose an empty marker."""
+        preferred = self._aruco_goals.get(aruco_id)
+        if preferred is not None and not self._is_goal_occupied(preferred, box_path):
+            return preferred
+        for _, goal_xy in sorted(self._aruco_goals.items()):
+            if not self._is_goal_occupied(goal_xy, box_path):
+                return goal_xy
+        return preferred if preferred is not None else self._home_xy
 
     def _detect_aruco(self, frame: np.ndarray):
         """카메라 프레임에서 가장 큰 ArUco 마커 ID를 반환. 없으면 None."""
@@ -663,16 +773,11 @@ class SpotAgent(BaseRobotAgent):
                 return
             # 가장 가까운 AutoBox 위치 확인
             pos, _ = self._get_pos_yaw()
-            _, box_xy = self._find_nearest_autobox(pos[:2])
+            box_path, box_xy = self._find_nearest_autobox(pos[:2], skip_goal_zones=True)
             if box_xy is None:
                 return
-            # 박스가 이미 목표 영역 안에 있으면 스킵
-            if self._is_in_goal_zone(box_xy):
-                print(f"[{self.name}] ID={aruco_id} 박스가 이미 목표 영역 안 "
-                      f"{box_xy.round(2)} → 스킵")
-                return
             self._detected_aruco_id = aruco_id
-            self._goal_xy           = self._aruco_goals[aruco_id]
+            self._goal_xy           = self._select_goal_for_box(aruco_id, box_path)
             self._cube_nav          = box_xy
             self._state             = "NAVIGATE_TO_CUBE"
             self._state_step        = 0
@@ -681,6 +786,24 @@ class SpotAgent(BaseRobotAgent):
         except Exception as e:
             carb.log_warn(f"[{self.name}] detect 오류: {e}")
 
+    def _try_find_box_direct(self):
+        """Fallback: pick the nearest unplaced box and send it to an A-side marker."""
+        try:
+            pos, _ = self._get_pos_yaw()
+            box_path, box_xy = self._find_nearest_autobox(
+                pos[:2], max_dist=8.0, skip_goal_zones=True)
+            if box_xy is None:
+                return
+            self._detected_aruco_id = None
+            self._goal_xy           = self._select_goal_for_box(0, box_path)
+            self._cube_nav          = box_xy
+            self._state             = "NAVIGATE_TO_CUBE"
+            self._state_step        = 0
+            print(f"[{self.name}] Box 직접 감지  박스={box_xy.round(2)} "
+                  f"목표={self._goal_xy.round(2)}")
+        except Exception as e:
+            carb.log_warn(f"[{self.name}] direct box detect 오류: {e}")
+
     # ── 내비게이션 ───────────────────────────────────────────────────
 
     def _get_pos_yaw(self):
@@ -688,10 +811,21 @@ class SpotAgent(BaseRobotAgent):
         yaw = R.from_quat([quat[1], quat[2], quat[3], quat[0]]).as_euler("xyz")[2]
         return pos, yaw
 
+    def _set_nearest_patrol_waypoint(self) -> None:
+        try:
+            pos, _ = self._get_pos_yaw()
+            dists = [float(np.linalg.norm(wp - pos[:2])) for wp in self._waypoints]
+            self._wp_idx = int(np.argmin(dists))
+            self._active_detour = None
+            self._detour_cooldown = 0
+        except Exception:
+            pass
+
     def _nav_toward(self, tgt_xy: np.ndarray, speed: float = None) -> np.ndarray:
         speed = speed or _SPEED
         try:
             pos, yaw = self._get_pos_yaw()
+            tgt_xy = _pod_safe_detour(pos[:2], np.array(tgt_xy, dtype=np.float64))
             dist     = np.linalg.norm(pos[:2] - tgt_xy)
             vx       = speed * min(1.0, dist / _APPROACH_DIST)
             ey       = np.arctan2(tgt_xy[1]-pos[1], tgt_xy[0]-pos[0]) - yaw
@@ -798,6 +932,8 @@ class SpotAgent(BaseRobotAgent):
             return np.zeros(3)
 
         if self._state == "WALKING":
+            if self._pickup_cooldown > 0:
+                self._pickup_cooldown -= 1
             # 고우선순위: 정지 중인 하위 우선순위 Spot 우회 (persistent detour + cooldown)
             if self._detour_cooldown > 0:
                 # 우회 완료 후 쿨다운 중 — 일반 주행으로 멀어지도록 대기
@@ -819,10 +955,11 @@ class SpotAgent(BaseRobotAgent):
                     return self._nav_toward(detour)
 
             cmd = self._waypoint_cmd()
-            self._det_cnt += 1
-            if self._det_cnt >= _DETECT_EVERY:
-                self._det_cnt = 0
-                self._try_detect_aruco()           # ArUco ID 탐지
+            if self._pickup_cooldown <= 0:
+                self._det_cnt += 1
+                if self._det_cnt >= _DETECT_EVERY:
+                    self._det_cnt = 0
+                    self._try_detect_aruco()           # ArUco ID 탐지
 
         elif self._state == "NAVIGATE_TO_CUBE":
             if self._cube_nav is None:
@@ -871,7 +1008,8 @@ class SpotAgent(BaseRobotAgent):
             self._sync_autobox_to_gripper()
             try:
                 pos, _ = self._get_pos_yaw()
-                if np.linalg.norm(pos[:2] - goal) < _HOME_DIST:
+                if (np.linalg.norm(pos[:2] - goal) < _HOME_DIST or
+                        self._state_step > 2000):
                     self._state      = "RELEASE"
                     self._state_step = 0
                     self._trigger_open()
@@ -881,7 +1019,7 @@ class SpotAgent(BaseRobotAgent):
 
         elif self._state == "RELEASE":
             self._sync_autobox_to_gripper()
-            if self._ganim_state == "idle":
+            if self._ganim_state == "idle" or self._state_step > _ANIM_STEPS + 80:
                 self._gripped           = False
                 self._detach_autobox()             # AutoBox 해제
                 self._detected_aruco_id = None
@@ -889,6 +1027,8 @@ class SpotAgent(BaseRobotAgent):
                 self._cube_nav          = None
                 self._state             = "WALKING"
                 self._state_step        = 0
+                self._pickup_cooldown   = 500
+                self._set_nearest_patrol_waypoint()
                 print(f"[{self.name}] 배치 완료 → WALKING")
 
         return cmd

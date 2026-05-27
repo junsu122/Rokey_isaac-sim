@@ -115,98 +115,108 @@ POD_STACKS = [
     {"name": "PodStack_04", "usd": _POD_USD, "xyz": ( 12.0, 14.0, 0.0), "yaw": 0.0},  # 드론 배달 목적지
 ]
 
-# ── Section Pod Stacks (A / B / C  3×4 슬롯) ─────────────────────────
+# ── Section Pod Stacks (A / B / C  3×3 슬롯) ─────────────────────────
 SECTION_POD_USD = _POD_USD
+SECTION_GRID_COLS = 3
+SECTION_GRID_ROWS = 3
+SECTION_GRID_DX = 2.8
+SECTION_GRID_DY = 2.0
+SECTION_GRID_CENTERS = {
+    "A": (0.0,  10.0),
+    "B": (0.0,   0.0),
+    "C": (0.0, -10.0),
+}
 
 
 def _make_grid(cx: float, cy: float,
-               cols: int = 3, rows: int = 4,
-               dx: float = 2.8, dy: float = 2.0,
+               cols: int = SECTION_GRID_COLS, rows: int = SECTION_GRID_ROWS,
+               dx: float = SECTION_GRID_DX, dy: float = SECTION_GRID_DY,
                z: float = 0.0) -> list:
+    """Return explicit pod-center positions for a section grid.
+
+    Slot 01 is the left/conveyor-side slot of the upper row. Every section
+    uses the same fixed dx/dy step. The average of all returned slot centers
+    is exactly the section bounding-box center (cx, cy).
+    """
     xs = [cx + (c - (cols - 1) / 2.0) * dx for c in range(cols)]
-    ys = [cy + (r - (rows - 1) / 2.0) * dy for r in range(rows)]
+    ys = [cy + ((rows - 1) / 2.0 - r) * dy for r in range(rows)]
     return [(round(x, 3), round(y, 3), z) for y in ys for x in xs]
 
 
 SECTION_PODS = {
-    "A": _make_grid(0.0,  10.0),   # Sec A: slot01=(-2.8,  7.0), reserved empty
-    "B": _make_grid(0.0,  -0.2),   # Sec B: slot01=(-2.8, -3.2), reserved empty
-    "C": _make_grid(0.0, -10.0),   # Sec C: slot01=(-2.8,-13.0), reserved empty
+    sec: _make_grid(cx, cy)
+    for sec, (cx, cy) in SECTION_GRID_CENTERS.items()
 }
 
 ROBOT_REGISTRY = [
 
-    # ── Drone #1 ────────────────────────────────────────────────────
-    {
-        "type"        : "drone",
-        "name"        : "Drone_01",
-        "spawn_xyz"   : (-16.0, -16.0, 0.07),
-        "spawn_yaw"   : 0.0,
-        "takeoff_alt" : 2.5,
-        # 드론 자율 미션: 각 섹션의 지정 슬롯 포드를 집어서 배달지(12,14)로 운반
-        # 슬롯 번호는 세계 좌표 기준 1-indexed (슬롯 01은 비어 있음)
-        "section_targets" : {"A": 3, "B": 2, "C": 3},
-        "delivery_xyz"    : (12.0, 14.0, 0.0),
-    },
+    # # ── Drone #1 ────────────────────────────────────────────────────
+    # {
+    #     "type"        : "drone",
+    #     "name"        : "Drone_01",
+    #     "spawn_xyz"   : (-16.0, -16.0, 0.07),
+    #     "spawn_yaw"   : 0.0,
+    #     "takeoff_alt" : 2.5,
+    #     # 드론 자율 미션: 각 섹션의 지정 슬롯 포드를 집어서 배달지(12,14)로 운반
+    #     # 슬롯 번호는 세계 좌표 기준 1-indexed (슬롯 01은 비어 있음)
+    #     "section_targets" : {"A": 3, "B": 2, "C": 3},
+    #     "delivery_xyz"    : (12.0, 14.0, 0.0),
+    # },
 
-    # ── Spot #1 — Section A+B 순찰 (A와 B 사이 시작) ─────────────────────
-    # 경로: x=±4.5 (pod x범위 ±2.8보다 1.7m 바깥),
-    #       y=14.5 (SecA 최상단 pod y=13.0보다 1.5m 위),
-    #       y=-4.7 (SecB 최하단 pod y=-3.2보다 1.5m 아래)
-    {
-        "type"      : "spot",
-        "name"      : "Spot_01",
-        "spawn_xyz" : ( 0.2,  4.8, 0.7),
-        "spawn_yaw" : 0.0,
-        "waypoints": [
-            ( 4.5,  5.0),
-            ( 4.5, 14.5),
-            ( 0.0, 14.5),
-            (-4.5, 14.5),
-            (-4.5,  5.0),
-            (-4.5, -4.7),
-            ( 0.0, -4.7),
-            ( 4.5, -4.7),
-        ],
-        "aruco_goals": {
-            0: (-2.8,  14.5),
-            1: ( 0.0,  14.5),
-            2: ( 2.8,  14.5),
-        },
-    },
+    # # ── Spot #1 — Section A+B 순찰 (A와 B 사이 시작) ─────────────────────
+    # # 경로: x=±5.5, y도 section 밖으로 더 넓게 돌아 IW Hub/Pod 영역을 피함
+    # {
+    #     "type"      : "spot",
+    #     "name"      : "Spot_01",
+    #     "spawn_xyz" : ( 0.2,  4.8, 0.7),
+    #     "spawn_yaw" : 0.0,
+    #     "waypoints": [
+    #         ( 6.4,  6.4),
+    #         ( 6.4, 14.0),
+    #         (-6.4, 14.0),
+    #         (-6.4,  6.4),
+    #         (-6.4, -6.4),
+    #         ( 6.4, -6.4),
+    #     ],
+    #     "aruco_goals": {
+    #         0: (-2.8,  14.5),
+    #         1: ( 0.0,  14.5),
+    #         2: ( 2.8,  14.5),
+    #     },
+    # },
 
-    # ── Spot #2 — Section B+C 순찰 (B와 C 사이 시작) ─────────────────────
-    # 경로: x=±4.5 (pod x범위 ±2.8보다 1.7m 바깥),
-    #       y=4.3  (SecB 최상단 pod y=2.8보다 1.5m 위),
-    #       y=-14.5 (SecC 최하단 pod y=-13.0보다 1.5m 아래)
-    {
-        "type"      : "spot",
-        "name"      : "Spot_02",
-        "spawn_xyz" : ( 0.0, -5.5, 0.7),
-        "spawn_yaw" : 0.0,
-        "waypoints": [
-            ( 4.5, -4.7),
-            ( 4.5,-14.5),
-            ( 0.0,-14.5),
-            (-4.5,-14.5),
-            (-4.5, -4.7),
-            (-4.5,  4.3),
-            ( 0.0,  4.3),
-            ( 4.5,  4.3),
-        ],
-        "aruco_goals": {
-            0: (-2.8, -14.5),
-            1: ( 0.0, -14.5),
-            2: ( 2.8, -14.5),
-        },
-    },
+    # # ── Spot #2 — Section B+C 순찰 (B와 C 사이 시작) ─────────────────────
+    # # 경로: x=±5.5, y도 section 밖으로 더 넓게 돌아 IW Hub/Pod 영역을 피함
+    # {
+    #     "type"      : "spot",
+    #     "name"      : "Spot_02",
+    #     "spawn_xyz" : ( 0.0, -5.5, 0.7),
+    #     "spawn_yaw" : 0.0,
+    #     "waypoints": [
+    #         ( 6.4, -6.4),
+    #         ( 6.4,-14.0),
+    #         (-6.4,-14.0),
+    #         (-6.4, -6.4),
+    #         (-6.4,  6.4),
+    #         ( 6.4,  6.4),
+    #     ],
+    #     "aruco_goals": {
+    #         0: (-2.8,  14.5),
+    #         1: ( 0.0,  14.5),
+    #         2: ( 2.8,  14.5),
+    #     },
+    # },
 
-    # ── IW Hub #1 ─ PodStack_01 위치, Section A 배달 ──────────────────────
+    # ── IW Hub #1 ─ Section A 스크립트 루트 ────────────────────────────
+    # 경로: spawn(-12.8,9.2) → lift up → (-12.8,12.64) → (-7.4,12.64)
+    #        → (-7.4,6.5) → fast (12.5,6.5) lift down → (-0.036,6.508)
+    #        → (-0.036,12.23) → (-12.7,12.23) → (-12.7,9.2) lift down → wait
     {
         "type"            : "iw_hub",
         "name"            : "iw_hub_01",
-        "spawn_xyz"       : (-12.8, 9.2, -0.14),   # PodStack_01 위치 (원래대로)
-        "spawn_yaw"       : 90.0,
+        "spawn_xyz"       : (-12.8, 9.2, -0.14),
+        "spawn_yaw"       : -90.0,
+        "mode"            : "section_a",
         "section"         : "A",
         "complete_topic"  : "/m0609_A/work",
         "complete_signal" : "A_complete",
@@ -223,7 +233,7 @@ ROBOT_REGISTRY = [
         "spawn_xyz"       : (-6.45, 1.5, -0.14),
         "spawn_yaw"       : 0.0,
         "mode"            : "pickup",
-        "pickup_xyz"      : (-7.9, 1.5),
+        "pickup_xyz"      : (-7.95, 1.5),
         "section"         : "B",
         "complete_topic"  : "/m0609_B/work",
         "complete_signal" : "B_complete",
@@ -236,7 +246,7 @@ ROBOT_REGISTRY = [
         "type"            : "iw_hub",
         "name"            : "iw_hub_03",
         "spawn_xyz"       : (-9.7, -8.6, -0.14),   # PodStack_03(-9.7,-8.9) 에서 +x 1.4m
-        "spawn_yaw"       : 90,
+        "spawn_yaw"       : 90.0,
         "section"         : "C",
         "complete_topic"  : "/m0609_C/work",
         "complete_signal" : "C_complete",
@@ -257,8 +267,8 @@ ROBOT_REGISTRY = [
         "aruco_box_wh": (0.30, 0.30),           # zone2 박스 bw=0.3 bd=0.3
         "waypoint_xyz"      : (-11.3, 8.7, 1.5),
         "pick_z_offset"     : -0.1,   # ★ 픽 Z 추가 오프셋 (음수=더 아래, m)
-        "work_complete_count": 3,     # ★ 3회 픽앤플레이스마다 IW Hub 트리거 신호 발행
-        "wait_after_complete": False, # ★ 신호 발행 후 WAITING 진입 없이 계속 감지
+        "work_complete_count": 1,     # ★ 1회 픽앤플레이스마다 IW Hub 트리거 신호 발행
+        "wait_after_complete": True,  # ★ 신호 발행 후 X_start 토픽 수신 대기
         # "pad_reach"        : 0.144,  # ★ EE→흡착패드끝 거리(m)
         # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
         # "home_return_steps": 150,    # ★ 홈복귀 속도 (↓값=빠름, 기본 250=0.5초)
@@ -277,7 +287,7 @@ ROBOT_REGISTRY = [
         "waypoint_xyz"      : (-8.7, 0.0, 1.5),
         "pick_z_offset"     : -0.1,   # ★ 픽 Z 추가 오프셋 (음수=더 아래, m)
         "work_complete_count": 1,     # ★ 1회 픽앤플레이스마다 IW Hub 트리거 신호 발행
-        "wait_after_complete": False, # ★ 신호 발행 후 WAITING 진입 없이 계속 감지
+        "wait_after_complete": True,  # ★ 신호 발행 후 X_start 토픽 수신 대기
         # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
     },
 
@@ -294,8 +304,8 @@ ROBOT_REGISTRY = [
         "waypoint_xyz"      : (-11.3, -8.7, 1.5),
         "pad_reach"         : 0.2,    # ★ EE→흡착패드끝 거리(m). 미지정 시 (stem+pad)×scale 자동계산
         "pick_z_offset"     : -0.1,   # ★ 픽 Z 추가 오프셋 (음수=더 아래, m)
-        "work_complete_count": 3,     # ★ 3회 픽앤플레이스마다 IW Hub 트리거 신호 발행
-        "wait_after_complete": False, # ★ 신호 발행 후 WAITING 진입 없이 계속 감지
+        "work_complete_count": 1,     # ★ 3회 픽앤플레이스마다 IW Hub 트리거 신호 발행
+        "wait_after_complete": True,  # ★ 신호 발행 후 X_start 토픽 수신 대기
         # "movel_steps"      : 30,     # ★ MOVEL 속도 (↓값=빠름, 기본 60)
     },
 

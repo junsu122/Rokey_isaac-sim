@@ -60,8 +60,34 @@ def _get_ros2_node():
     return _ros2_node
 
 _SENSORS_REL  = "iw_hub_sensors"
-_CORRIDOR_XY  = (-6.0, 1.5)   # 픽업 복귀 후 섹션 진입 중간점
+_CORRIDOR_XY  = (-6.0, 1.5)   # 픽업 복귀 후 컨베이어 복귀 중간점
+_SECTION_STAGING_X = -5.9     # first route gate before section turn
+_SECTION_STAGING_Y = 1.5
+_FIRST_ROUTE_Y_XY = (-5.9, 4.3)
+_FIRST_PLACE_XY = (13.1, 4.3)
+_SECOND_ROUTE_TOP_XY = (0.05, 4.3)
+_SECOND_POD_XY = (0.05, 2.0)
 _SPOT_WAIT_DIST = 2.0
+_SECTION_EXIT_X = _SECTION_STAGING_X
+_SECTION_A_ROUTE_TOL = 0.06
+_SECTION_A_NORTH_Y = 12.64
+_SECTION_A_GATE_X = -7.4
+_SECTION_A_DROP_Y = 6.5
+_SECTION_A_DROP_X = 12.5
+_SECTION_A_BACK_X = -0.036
+_SECTION_A_BACK_Y = 6.508
+_SECTION_A_RETURN_Y = 12.23
+_SECTION_A_HOME_X = -12.7
+_SECTION_A_HOME_Y = 9.2
+_SECTION_C_ROUTE_TOL = 0.06
+_SECTION_C_START_X = -9.7
+_SECTION_C_START_Y = -8.6
+_SECTION_C_NORTH_Y = -5.4
+_SECTION_C_DROP_X = 12.5
+_SECTION_C_BACK_X = 0.003
+_SECTION_C_POD_Y = -7.72
+_SECTION_C_RETURN_X = -9.6
+_SECTION_C_RETURN_Y = -5.73
 
 
 def _set_rel_targets(stage, prim_path: str, rel_name: str, targets: list):
@@ -188,23 +214,31 @@ def _build_action_graph(robot_root: str, robot_name: str):
 class IwHubAgent(BaseRobotAgent):
     """IW Hub 스폰 + ActionGraph 설정 + 자율 미션 FSM."""
 
-    _ROBOTS_PATH = "/World/Robots"
+    _ROBOTS_PATH = "/World"
 
     # ── 미션 상수 ─────────────────────────────────────────────────────
     LIFT_UP         = 0.30    # 리프트 올림 위치 [m]
     LIFT_DOWN       = 0.0     # 리프트 내림 위치 [m]
     LIFT_STEPS      = 200     # 리프트 대기 FSM 틱 (200 * PUB_EVERY = 2000 physics steps ≈ 4s) — 천천히 올려 포드 넘어짐 방지
     NAV_TOL         = 0.20    # 도착 허용 오차 [m]
-    MAX_V           = 0.8     # 최대 직진 속도 [m/s]
-    MAX_W           = 1.5     # 최대 회전 속도 [rad/s]
+    MAX_V           = 1.25    # 최대 직진 속도 [m/s]
+    MAX_W           = 2.0     # 최대 회전 속도 [rad/s]
     KP_W            = 2.5     # 회전 P게인
     PUB_EVERY       = 10      # cmd_vel 발행 주기 (physics step 수)
     COMPLETE_NEEDED = 3       # 출발 조건: complete 신호 횟수
     DOCK_TOL        = 0.08    # pod place/pick 시 정밀 정렬 허용 오차 [m]
+    PRECISE_TOL     = 0.04    # section pod center 정밀 접근 허용 오차 [m]
+    PLACE_TOL       = 0.05    # pod를 내려놓기 전 최종 minimap 허용 오차 [m]
+    PLACE_SETTLE_STEPS = 5    # 정지 명령 유지 후 리프트 다운 시작
+    AXIS_MIN_V      = 0.055   # small corrections need enough speed to beat static friction
+    FAST_ROUTE_V    = 1.45    # long straight first-drop route speed [m/s]
+    FIRST_DROP_X_TOL = 1.00   # if the hub reaches the drop area, lower without turning
+    FIRST_DROP_Y_TOL = 0.40
+    FIRST_DROP_MIN_X = 13.0
     DOCK_KP         = 0.65
     DOCK_KI         = 0.015
     DOCK_KD         = 0.18
-    DOCK_MAX_V      = 0.22
+    DOCK_MAX_V      = 0.35
 
     # ── setup ────────────────────────────────────────────────────────
     def setup(self) -> None:
@@ -258,11 +292,14 @@ class IwHubAgent(BaseRobotAgent):
         self._lw_joint_path = None
         self._rw_joint_path = None
 
-        # ── odom 피드백 (ROS2 구독, move_to_point.py 와 동일 방식) ──────
+        # ── odom 피드백 (ROS2 구독). Targets are minimap coords, so odom
+        #    is converted into the minimap frame before navigation uses it.
         self._odom_x     = float(self.spawn_xyz[0])
         self._odom_y     = float(self.spawn_xyz[1])
         self._odom_yaw   = 0.0
         self._odom_fresh = False
+        self._odom_map_tf = None
+        self._odom_count  = 0
 
         # ── 모드 분기 ────────────────────────────────────────────────
         self._mode = self.cfg.get("mode", "standard")
@@ -279,6 +316,11 @@ class IwHubAgent(BaseRobotAgent):
             self._dock_target    = None
             self._dock_pid       = {"axis": None, "err_i": 0.0, "prev_err": 0.0}
             self.mission_state   = -1   # pickup 모드에서는 표준 FSM 미사용
+        elif self._mode in ("section_a", "section_c"):
+            # 섹션 A/C 스크립트 루트 모드
+            self._sa_state     = "WAITING"
+            self._fsm_step     = 0
+            self.mission_state = -1
         else:
             self.mission_state   = 0    # 0=WAITING
 
@@ -367,7 +409,7 @@ class IwHubAgent(BaseRobotAgent):
             self._ros2_cmd_pub  = node.create_publisher(Twist,      f"/{self.name}/cmd_vel",  10)
             self._ros2_lift_pub = node.create_publisher(JointState, f"/{self.name}/lift_cmd", 10)
 
-            # odom 구독 — move_to_point.py 와 동일 방식 (BEST_EFFORT QoS)
+            # odom 구독 — converted into minimap/world frame in _get_xy_hdg().
             def _on_odom(msg):
                 p = msg.pose.pose.position
                 o = msg.pose.pose.orientation
@@ -377,6 +419,7 @@ class IwHubAgent(BaseRobotAgent):
                 cosy = 1.0 - 2.0 * (o.y * o.y + o.z * o.z)
                 self._odom_yaw   = math.atan2(siny, cosy)
                 self._odom_fresh = True
+                self._odom_count += 1
             node.create_subscription(Odometry, f"/{self.name}/odom", _on_odom, _isaac_qos)
 
             complete_signal = self._complete_signal
@@ -392,27 +435,15 @@ class IwHubAgent(BaseRobotAgent):
             print(f"[{self.name}] ROS2 설정 실패: {e}")
 
     # ── 위치 읽기 ─────────────────────────────────────────────────────
-    def _get_xy_hdg(self) -> tuple:
-        """(x, y, heading_rad) — odom 구독 우선 (move_to_point.py 와 동일), XformCache 폴백."""
-        # 1순위: odom 피드백 (ActionGraph가 publish, 실시간 갱신됨)
-        if self._odom_fresh:
-            # odom 은 로봇 기준 로컬 프레임 (시작점 = 0,0).
-            # 내비게이션 타겟은 월드 좌표이므로 spawn 오프셋을 더해 월드 좌표로 변환한다.
-            wx = float(self.spawn_xyz[0]) + self._odom_x
-            wy = float(self.spawn_xyz[1]) + self._odom_y
-            self._hdg_debug = getattr(self, "_hdg_debug", 0) + 1
-            if self._hdg_debug % 100 == 1:
-                print(f"[{self.name}] odom(world) pos=({wx:.2f},{wy:.2f}) "
-                      f"yaw={math.degrees(self._odom_yaw):.1f}°")
-            return wx, wy, self._odom_yaw
-        # 2순위: USD XformCache (odom 아직 미수신 시 초기 추정)
+    def _get_world_xy_hdg(self) -> tuple | None:
+        """Ground-truth minimap/world pose from the USD stage."""
         try:
             stage = omni.usd.get_context().get_stage()
             prim = stage.GetPrimAtPath(f"{self._prim_path}/{_SENSORS_REL}")
             if not prim.IsValid():
                 prim = stage.GetPrimAtPath(self._prim_path)
             if not prim.IsValid():
-                return float(self.spawn_xyz[0]), float(self.spawn_xyz[1]), 0.0
+                return None
             cache = UsdGeom.XformCache()
             mat   = cache.GetLocalToWorldTransform(prim)
             tr    = mat.ExtractTranslation()
@@ -420,7 +451,60 @@ class IwHubAgent(BaseRobotAgent):
             yaw   = math.atan2(float(rot[1][0]), float(rot[0][0]))
             return float(tr[0]), float(tr[1]), yaw
         except Exception:
-            return float(self.spawn_xyz[0]), float(self.spawn_xyz[1]), 0.0
+            return None
+
+    def _calibrate_odom_to_minimap(self, minimap_pose: tuple) -> None:
+        """Build transform that converts IW Hub odom coordinates to minimap coordinates."""
+        mx, my, myaw = minimap_pose
+        yaw_off = self._angle_err(myaw, self._odom_yaw)
+        c = math.cos(yaw_off)
+        s = math.sin(yaw_off)
+        ox_map = c * self._odom_x - s * self._odom_y
+        oy_map = s * self._odom_x + c * self._odom_y
+        self._odom_map_tf = {
+            "yaw": yaw_off,
+            "tx": mx - ox_map,
+            "ty": my - oy_map,
+        }
+
+    def _odom_as_minimap(self) -> tuple | None:
+        """Current odom sample converted into minimap coordinates."""
+        if not self._odom_fresh or self._odom_map_tf is None:
+            return None
+        yaw_off = self._odom_map_tf["yaw"]
+        c = math.cos(yaw_off)
+        s = math.sin(yaw_off)
+        mx = c * self._odom_x - s * self._odom_y + self._odom_map_tf["tx"]
+        my = s * self._odom_x + c * self._odom_y + self._odom_map_tf["ty"]
+        myaw = self._angle_err(self._odom_yaw + yaw_off, 0.0)
+        return mx, my, myaw
+
+    def _get_xy_hdg(self) -> tuple:
+        """(x, y, heading_rad) in minimap coordinates.
+
+        User goals are minimap coordinates. IW Hub feedback is odom, so convert
+        odom into the minimap frame using the current USD/minimap pose as the
+        calibration reference.
+        """
+        world_pose = self._get_world_xy_hdg()
+        if (self._odom_fresh and world_pose is not None
+                and self._odom_map_tf is None and self._odom_count >= 200):
+            self._calibrate_odom_to_minimap(world_pose)
+            print(f"[{self.name}] odom calibration 완료 (count={self._odom_count}) "
+                  f"yaw_off={math.degrees(self._odom_map_tf['yaw']):.1f}°")
+
+        pose = self._odom_as_minimap()
+        if pose is not None:
+            x, y, yaw = pose
+            self._hdg_debug = getattr(self, "_hdg_debug", 0) + 1
+            if self._hdg_debug % 100 == 1:
+                print(f"[{self.name}] odom→minimap pos=({x:.2f},{y:.2f}) "
+                      f"yaw={math.degrees(yaw):.1f}°")
+            return pose
+
+        if world_pose is not None:
+            return world_pose
+        return float(self.spawn_xyz[0]), float(self.spawn_xyz[1]), 0.0
 
     def get_world_xy(self) -> tuple:
         """(x, y, heading_rad) — 미니맵용."""
@@ -440,6 +524,8 @@ class IwHubAgent(BaseRobotAgent):
 
     def _spot_too_close(self) -> bool:
         """Pause IW Hub commands while a Spot is close to the hub body."""
+        if self._mode in ("pickup", "section_a", "section_c"):
+            return False
         try:
             hx, hy, _ = self._get_xy_hdg()
             for name in ("Spot_01", "Spot_02"):
@@ -612,6 +698,14 @@ class IwHubAgent(BaseRobotAgent):
         self._publish_cmd_vel(lv, av)
         return False
 
+    def _nav_to_tol(self, tx: float, ty: float, tol: float) -> bool:
+        old_tol = self.NAV_TOL
+        self.NAV_TOL = float(tol)
+        try:
+            return self._nav_to(tx, ty)
+        finally:
+            self.NAV_TOL = old_tol
+
     def _drive_axis_to(self, tx: float, ty: float, axis: str) -> bool:
         """Move on one axis only, choosing forward or reverse with the smaller yaw change.
 
@@ -639,14 +733,25 @@ class IwHubAgent(BaseRobotAgent):
             abs(abs(rev_err) - abs(fwd_err)) <= 1e-3 and rev_err > fwd_err
         )
         err_hdg = rev_err if use_reverse else fwd_err
-        lv = self.MAX_V * 0.6 * min(1.0, abs(delta) / 1.0)
+        lv_mag = self.MAX_V * 0.6 * min(1.0, abs(delta) / 1.0)
+        lv_mag = max(self.AXIS_MIN_V, lv_mag)
+        lv = lv_mag
         if use_reverse:
             lv = -lv
-        if abs(err_hdg) > 0.5:
-            lv = 0.0
-        av = max(-self.MAX_W, min(self.MAX_W, self.KP_W * err_hdg))
-        self._publish_cmd_vel(lv, av)
+        if abs(err_hdg) > 0.08:
+            av = max(-self.MAX_W, min(self.MAX_W, self.KP_W * err_hdg))
+            self._publish_cmd_vel(0.0, av)
+            return False
+        self._publish_cmd_vel(lv, 0.0)
         return False
+
+    def _drive_axis_to_tol(self, tx: float, ty: float, axis: str, tol: float) -> bool:
+        old_tol = self.NAV_TOL
+        self.NAV_TOL = float(tol)
+        try:
+            return self._drive_axis_to(tx, ty, axis)
+        finally:
+            self.NAV_TOL = old_tol
 
     def _get_drop_pos(self) -> tuple:
         """섹션 슬롯 01 배치 위치 (x, y) — IW Hub 배달 전용 예약 슬롯."""
@@ -687,9 +792,37 @@ class IwHubAgent(BaseRobotAgent):
         positions = SECTION_PODS.get(self._section_name, [])
         return [(float(p[0]), float(p[1])) for p in positions]
 
+    def _first_delivery_slot(self) -> tuple:
+        if self._delivery_slots:
+            return self._delivery_slots[0]
+        return self._home_xy
+
+    def _section_entry_xy(self) -> tuple:
+        return float(_SECTION_STAGING_X), float(_SECTION_STAGING_Y)
+
+    def _section_exit_x(self) -> float:
+        return float(_SECTION_EXIT_X)
+
     def _place_slot_target(self, tx: float, ty: float) -> tuple:
-        """Loaded pod placement target. Use the exact SECTION_PODS slot."""
-        return tx, ty
+        """Hub center target for a section pod.
+
+        The pod grid itself remains centered on SECTION_PODS. The IW Hub must
+        stop slightly to the right of the pod visual center so the lift plate is
+        centered under the pod in the minimap/simulation frame.
+        """
+        return tx + 0.3, ty
+
+    def _first_place_target(self) -> tuple:
+        return float(_FIRST_PLACE_XY[0]), float(_FIRST_PLACE_XY[1])
+
+    def _first_route_y_target(self) -> tuple:
+        return float(_FIRST_ROUTE_Y_XY[0]), float(_FIRST_ROUTE_Y_XY[1])
+
+    def _second_route_top_target(self) -> tuple:
+        return float(_SECOND_ROUTE_TOP_XY[0]), float(_SECOND_ROUTE_TOP_XY[1])
+
+    def _second_pod_target(self) -> tuple:
+        return float(_SECOND_POD_XY[0]), float(_SECOND_POD_XY[1])
 
     def _slot_aisle_x(self, slot_x: float) -> float:
         """Target slot 옆의 통로 x. 마지막 docking 전까지 pod 중심선 이동을 피한다."""
@@ -701,17 +834,19 @@ class IwHubAgent(BaseRobotAgent):
 
     def _approach_section_slot(self, tx: float, ty: float,
                                yfirst: bool = True,
+                               path_y_tol: float = None,
                                final_y_tol: float = None) -> bool:
         """Move through an aisle, then dock exactly into the requested slot."""
         aisle_x = self._slot_aisle_x(tx)
         x, y, _ = self._get_xy_hdg()
+        lane_tol = self.NAV_TOL if path_y_tol is None else float(path_y_tol)
         # The aisle is only an entry gate. Once the hub has passed the aisle
         # toward the slot, never drive back to the aisle; continue X-only.
         before_aisle = x < aisle_x - self.NAV_TOL if tx >= aisle_x else x > aisle_x + self.NAV_TOL
 
         if yfirst:
-            if abs(y - ty) > self.NAV_TOL:
-                return self._drive_axis_to(x, ty, "y")
+            if abs(y - ty) > lane_tol:
+                return self._drive_axis_to_tol(x, ty, "y", lane_tol)
             if before_aisle:
                 return self._drive_axis_to(aisle_x, ty, "x")
         else:
@@ -721,30 +856,131 @@ class IwHubAgent(BaseRobotAgent):
                 return self._drive_axis_to(aisle_x, ty, "y")
 
         old_tol = self.NAV_TOL
-        y_tol = self.NAV_TOL if final_y_tol is None else float(final_y_tol)
-        self.NAV_TOL = self.DOCK_TOL
+        y_tol = self.PRECISE_TOL if final_y_tol is None else float(final_y_tol)
+        self.NAV_TOL = min(self.DOCK_TOL, y_tol)
         try:
             x, y, _ = self._get_xy_hdg()
             if abs(y - ty) > y_tol:
-                return self._drive_axis_to(x, ty, "y")
+                return self._drive_axis_to_tol(x, ty, "y", y_tol)
             return self._dock_x_into_slot(tx, ty)
         finally:
             self.NAV_TOL = old_tol
 
-    def _dock_x_into_slot(self, tx: float, ty: float) -> bool:
+    def _dock_x_into_slot(self, tx: float, ty: float, tol: float = None) -> bool:
         """Final placement is X-only. Do not touch yaw or Y here."""
         x, _, hdg = self._get_xy_hdg()
         dx = tx - x
-        if abs(dx) <= self.DOCK_TOL:
+        tol = self.PRECISE_TOL if tol is None else float(tol)
+        if abs(dx) <= tol:
             self._publish_cmd_vel(0.0, 0.0)
             return True
 
         facing_plus_x = math.cos(hdg) >= 0.0
         need_plus_x = dx >= 0.0
-        speed = max(0.18, min(0.45, abs(dx) * 0.45))
+        speed = max(0.08, min(0.75, abs(dx) * 0.75))
         lv = speed if facing_plus_x == need_plus_x else -speed
         self._publish_cmd_vel(lv, 0.0)
         return False
+
+    def _drive_x_fast_to(self, tx: float, tol: float = None) -> bool:
+        """Fast X-only travel. Assumes heading is already set; never turns."""
+        x, _, hdg = self._get_xy_hdg()
+        dx = tx - x
+        tol = self.PLACE_TOL if tol is None else float(tol)
+        if abs(dx) <= tol:
+            self._publish_cmd_vel(0.0, 0.0)
+            return True
+
+        facing_plus_x = math.cos(hdg) >= 0.0
+        need_plus_x = dx >= 0.0
+        if abs(dx) > 1.0:
+            speed = self.FAST_ROUTE_V
+        else:
+            speed = max(0.10, min(0.45, abs(dx) * 0.55))
+        lv = speed if facing_plus_x == need_plus_x else -speed
+        self._publish_cmd_vel(lv, 0.0)
+        return False
+
+    def _drive_minimap_axis_with_heading(self, target: float, axis: str,
+                                         heading: float, tol: float = None,
+                                         fast: bool = False) -> bool:
+        """Drive one minimap axis while holding a fixed heading.
+
+        This is for scripted routes where the heading is part of the script.
+        It never chooses another yaw from the target. If yaw drifts too much,
+        it stops linear motion, corrects angle, then keeps going.
+        """
+        x, y, hdg = self._get_xy_hdg()
+        pos = x if axis == "x" else y
+        err = target - pos
+        tol = self.PRECISE_TOL if tol is None else float(tol)
+        if abs(err) <= tol:
+            self._publish_cmd_vel(0.0, 0.0)
+            return True
+
+        yaw_err = self._angle_err(heading, hdg)
+        if abs(yaw_err) > 0.10:
+            av = max(-self.MAX_W, min(self.MAX_W, self.KP_W * yaw_err))
+            self._publish_cmd_vel(0.0, av)
+            return False
+
+        axis_component = math.cos(hdg) if axis == "x" else math.sin(hdg)
+        if abs(axis_component) < 0.25:
+            av = max(-self.MAX_W, min(self.MAX_W, self.KP_W * yaw_err))
+            self._publish_cmd_vel(0.0, av)
+            return False
+
+        if fast and abs(err) > 1.0:
+            axis_speed = self.FAST_ROUTE_V
+        else:
+            axis_speed = max(0.10, min(0.55, abs(err) * 0.65))
+        lv = (axis_speed if err >= 0.0 else -axis_speed) / axis_component
+        lv = max(-self.FAST_ROUTE_V, min(self.FAST_ROUTE_V, lv))
+        self._publish_cmd_vel(lv, 0.0)
+        return False
+
+    def _drive_minimap_axis_no_turn(self, target: float, axis: str,
+                                    tol: float = None,
+                                    max_speed: float = 0.55) -> bool:
+        """Drive one minimap axis using current heading; never publish angular velocity."""
+        x, y, hdg = self._get_xy_hdg()
+        pos = x if axis == "x" else y
+        err = target - pos
+        tol = self.PRECISE_TOL if tol is None else float(tol)
+        if abs(err) <= tol:
+            self._publish_cmd_vel(0.0, 0.0)
+            return True
+        axis_component = math.cos(hdg) if axis == "x" else math.sin(hdg)
+        if abs(axis_component) < 0.15:
+            self._publish_cmd_vel(0.0, 0.0)
+            return False
+        axis_speed = max(self.AXIS_MIN_V, min(float(max_speed), abs(err) * 0.55))
+        lv = (axis_speed if err >= 0.0 else -axis_speed) / axis_component
+        lv = max(-float(max_speed), min(float(max_speed), lv))
+        self._publish_cmd_vel(lv, 0.0)
+        return False
+
+    def _approach_first_delivery_slot(self, tx: float, ty: float) -> bool:
+        """First delivery route: from staging, align Y then drive X directly."""
+        x, y, _ = self._get_xy_hdg()
+        if abs(y - ty) > self.PLACE_TOL:
+            return self._drive_axis_to_tol(x, ty, "y", self.PLACE_TOL)
+        return self._dock_x_into_slot(tx, ty, self.PLACE_TOL)
+
+    def _hold_exact_place_target(self, tx: float, ty: float) -> bool:
+        """Keep the hub stopped on the exact minimap target before lift-down."""
+        x, y, _ = self._get_xy_hdg()
+        if abs(x - tx) > self.PLACE_TOL or abs(y - ty) > self.PLACE_TOL:
+            self._place_settle = 0
+            if abs(y - ty) > self.PLACE_TOL:
+                heading = math.pi / 2.0 if ty >= y else -math.pi / 2.0
+                return self._drive_minimap_axis_with_heading(
+                    ty, "y", heading, self.PLACE_TOL, fast=False)
+            return self._drive_minimap_axis_with_heading(
+                tx, "x", -math.pi, self.PLACE_TOL, fast=False)
+        self._publish_cmd_vel(0.0, 0.0)
+        self._place_settle = getattr(self, "_place_settle", 0) + 1
+        return self._place_settle >= self.PLACE_SETTLE_STEPS
 
     def _nav_axis_aligned(self, tx: float, ty: float, yfirst: bool = False) -> bool:
         """축 정렬 이동 (대각선 금지). yfirst=True 이면 Y→X, 기본은 X→Y. 도착 시 True."""
@@ -779,6 +1015,7 @@ class IwHubAgent(BaseRobotAgent):
 
     def _run_lift_phase(self, up: bool) -> bool:
         """리프트 올리기(up=True) 또는 내리기(up=False) 시퀀스. 완료 시 True."""
+        self._publish_cmd_vel(0.0, 0.0)
         self._fsm_step += 1
         t = min(self._fsm_step / self.LIFT_STEPS, 1.0)
         self._publish_lift(t * self.LIFT_UP if up else (1.0 - t) * self.LIFT_UP)
@@ -790,17 +1027,20 @@ class IwHubAgent(BaseRobotAgent):
         return self._delivery_slots[self._delivery_idx % len(self._delivery_slots)]
 
     # ── 픽업 모드 FSM ────────────────────────────────────────────────
-    # 시나리오 (X or Y 한 축씩 이동, 불필요한 180° 회전 없음):
-    #   spawn(-6.45,1.5) → GOTO_PICKUP(-7.9,1.5) [X축 후진]
-    #   → LIFTING → GOTO_INTERM(-6.0,1.5) [X축 전진/후진]
-    #   → GOTO_SLOT(slot01, Y-first) → LOWERING
-    #   → BACKOUT_DROP → GOTO_NEXT_POD → LIFTING_OUT
-    #   → BACKOUT_PICK → GOTO_CORR_RETURN → GOTO_SUPPLY → LOWERING_OUT
+    # 시나리오:
+    #   spawn(-6.45,1.5) → GOTO_PICKUP(-7.95,1.5)
+    #   → LIFTING → GOTO_INTERM(-5.9,1.5)
+    #   → TURN_FIRST_Y(-90°) → GOTO_FIRST_Y(-5.9,4.3)
+    #   → TURN_FIRST_X(-180°) → GOTO_SLOT(12.5,4.3) → SETTLE_PLACE → LOWERING
+    #   → RETURN_FIRST_GATE_X(-5.9,4.3) → GOTO_SECOND_TOP_X(0,4.3)
+    #   → GOTO_SECOND_POD(0,2.0) → LIFTING_OUT
+    #   → return to pickup(-7.95,1.5) → LOWERING_OUT
     #   → RETREAT → WAITING
     def _run_pickup_fsm(self) -> None:
         cnt       = self._get_signal_count()
         px, py    = self._pickup_xy      # (-7.9, 1.5)
-        cx, cy    = _CORRIDOR_XY         # (-6.0, 1.5)
+        cx, cy    = _CORRIDOR_XY         # conveyor-side return corridor
+        sx, sy    = self._section_entry_xy()
 
         if self._pickup_state == "WAITING":
             self._fsm_step += 1
@@ -828,76 +1068,188 @@ class IwHubAgent(BaseRobotAgent):
                 self._reset_dock_pid()
                 self._pickup_state = "GOTO_INTERM"
                 self._fsm_step     = 0
-                print(f"[{self.name}] LIFTING → GOTO_INTERM  interm={_CORRIDOR_XY}")
+                print(f"[{self.name}] LIFTING → GOTO_INTERM  interm=({sx:.2f},{sy:.2f})")
 
         elif self._pickup_state == "GOTO_INTERM":
-            # X축만 이동. 동향이면 전진, 서향이면 후진 (180° 회전 불필요)
-            if self._drive_along_x(cx):
+            if self._drive_axis_to_tol(sx, sy, "x", self.PRECISE_TOL):
+                self._reset_dock_pid()
+                self._pickup_state = "TURN_FIRST_Y"
+                self._fsm_step     = 0
+                print(f"[{self.name}] GOTO_INTERM → TURN_FIRST_Y  yaw=-90°")
+
+        elif self._pickup_state == "TURN_FIRST_Y":
+            if self._turn_to_heading(-math.pi / 2.0):
+                self._reset_dock_pid()
+                self._pickup_state = "GOTO_FIRST_Y"
+                self._fsm_step     = 0
+                print(f"[{self.name}] TURN_FIRST_Y → GOTO_FIRST_Y  target={self._first_route_y_target()}")
+
+        elif self._pickup_state == "GOTO_FIRST_Y":
+            tx, ty = self._first_route_y_target()
+            if self._drive_minimap_axis_with_heading(ty, "y", -math.pi / 2.0,
+                                                     self.PRECISE_TOL):
+                self._reset_dock_pid()
+                self._pickup_state = "TURN_FIRST_X"
+                self._fsm_step     = 0
+                print(f"[{self.name}] GOTO_FIRST_Y → TURN_FIRST_X  yaw=-180°")
+
+        elif self._pickup_state == "TURN_FIRST_X":
+            if self._turn_to_heading(-math.pi):
                 self._reset_dock_pid()
                 self._pickup_state = "GOTO_SLOT"
                 self._fsm_step     = 0
-                print(f"[{self.name}] GOTO_INTERM → GOTO_SLOT  slot={self._get_next_delivery_slot()}")
+                print(f"[{self.name}] TURN_FIRST_X → GOTO_SLOT  target={self._first_place_target()}")
 
         elif self._pickup_state == "GOTO_SLOT":
-            raw_tx, raw_ty = self._get_next_delivery_slot()
-            tx, ty = self._place_slot_target(raw_tx, raw_ty)
-            if self._approach_section_slot(tx, ty, yfirst=True,
-                                           final_y_tol=0.25):
-                mx, my, _ = self._get_xy_hdg()
-                if abs(mx - tx) > self.DOCK_TOL:
-                    print(f"[{self.name}] GOTO_SLOT minimap guard  "
-                          f"pos=({mx:.2f},{my:.2f}) target=({tx:.2f},{ty:.2f})")
-                    return
-                # 드롭 위치에서 2m 후진할 목표 X 저장
-                self._backout_x    = self._slot_aisle_x(tx)
-                self._dock_target  = (tx, ty)
+            self._fsm_step += 1
+            tx, ty = self._first_place_target()
+            mx, my, _ = self._get_xy_hdg()
+            reached_drop_area = mx >= self.FIRST_DROP_MIN_X
+            if reached_drop_area:
+                self._publish_cmd_vel(0.0, 0.0)
+                self._backout_x    = self._section_exit_x()
+                self._dock_target  = (mx, my)
                 self._reset_dock_pid()
                 self._pickup_state = "LOWERING"
                 self._fsm_step     = 0
-                print(f"[{self.name}] GOTO_SLOT → LOWERING  at=({tx:.2f},{ty:.2f})")
+                print(f"[{self.name}] GOTO_SLOT → LOWERING  line reached "
+                      f"pos=({mx:.2f},{my:.2f}) target=({tx:.2f},{ty:.2f})")
+                return
+            if self._drive_minimap_axis_with_heading(tx, "x", -math.pi,
+                                                     self.PLACE_TOL, fast=True):
+                mx, my, _ = self._get_xy_hdg()
+                if mx < self.FIRST_DROP_MIN_X:
+                    print(f"[{self.name}] GOTO_SLOT minimap guard  "
+                          f"pos=({mx:.2f},{my:.2f}) target=({tx:.2f},{ty:.2f})")
+                    return
+                self._backout_x    = self._section_exit_x()
+                self._dock_target  = (mx, my)
+                self._reset_dock_pid()
+                self._pickup_state = "LOWERING"
+                self._fsm_step     = 0
+                print(f"[{self.name}] GOTO_SLOT → LOWERING  at=({mx:.2f},{my:.2f})")
+
+        elif self._pickup_state == "SETTLE_PLACE":
+            tx, ty = self._dock_target or self._first_place_target()
+            if self._hold_exact_place_target(tx, ty):
+                self._reset_dock_pid()
+                self._pickup_state = "LOWERING"
+                self._fsm_step     = 0
+                print(f"[{self.name}] SETTLE_PLACE → LOWERING  exact=({tx:.2f},{ty:.2f})")
 
         elif self._pickup_state == "LOWERING":
             if self._run_lift_phase(up=False):
                 self._drop_idx    += 1
-                self._delivery_idx = (self._delivery_idx + 1) % max(1, len(self._delivery_slots))
                 self._reset_dock_pid()
-                self._pickup_state = "BACKOUT_DROP"
+                self._pickup_state = "RETURN_FIRST_GATE_X"
                 self._fsm_step     = 0
-                print(f"[{self.name}] LOWERING → BACKOUT_DROP  "
-                      f"target_x={self._backout_x:.2f}  (배달 #{self._drop_idx})")
+                print(f"[{self.name}] LOWERING → RETURN_FIRST_GATE_X  gate={self._first_route_y_target()}")
 
-        elif self._pickup_state == "BACKOUT_DROP":
-            # 방금 내려놓은 포드에서 먼저 X축으로 이탈한 뒤 다음 pod 로 접근
-            if self._drive_along_x(self._backout_x):
+        elif self._pickup_state == "RETURN_FIRST_GATE_X":
+            tx, _ = self._first_route_y_target()
+            # Immediately after lift-down, do not turn near the pod. Reverse
+            # the same X path until the hub is clear, then continue routing.
+            if self._drive_x_fast_to(tx, self.PRECISE_TOL):
                 self._reset_dock_pid()
-                self._pickup_state = "GOTO_NEXT_POD"
+                self._pickup_state = "GOTO_SECOND_TOP_X"
                 self._fsm_step     = 0
-                print(f"[{self.name}] BACKOUT_DROP → GOTO_NEXT_POD  "
-                      f"next={self._get_next_delivery_slot()}")
+                print(f"[{self.name}] RETURN_FIRST_GATE_X → GOTO_SECOND_TOP_X  top={self._second_route_top_target()}")
 
-        elif self._pickup_state == "GOTO_NEXT_POD":
-            tx, ty = self._get_next_delivery_slot()
-            if self._approach_section_slot(tx, ty, yfirst=True):
-                self._backout_x    = self._slot_aisle_x(tx)
-                self._dock_target  = (tx, ty)
+        elif self._pickup_state in ("RETURN_TOP_X", "GOTO_SECOND_TOP_X"):
+            tx, _ = self._second_route_top_target()
+            if self._drive_minimap_axis_with_heading(tx, "x", -math.pi,
+                                                     0.03, fast=False):
+                self._reset_dock_pid()
+                self._pickup_state = "TURN_SECOND_Y"
+                self._fsm_step     = 0
+                print(f"[{self.name}] GOTO_SECOND_TOP_X → TURN_SECOND_Y  yaw=-90°")
+
+        elif self._pickup_state == "TURN_SECOND_Y":
+            if self._turn_to_heading(-math.pi / 2.0):
+                self._reset_dock_pid()
+                self._pickup_state = "GOTO_SECOND_POD_Y"
+                self._fsm_step     = 0
+                print(f"[{self.name}] TURN_SECOND_Y → GOTO_SECOND_POD_Y  target={self._second_pod_target()}")
+
+        elif self._pickup_state == "GOTO_SECOND_POD_Y":
+            _, ty = self._second_pod_target()
+            if self._drive_minimap_axis_with_heading(ty, "y", -math.pi / 2.0,
+                                                     0.03):
                 self._reset_dock_pid()
                 self._pickup_state = "LIFTING_OUT"
                 self._fsm_step     = 0
-                print(f"[{self.name}] GOTO_NEXT_POD → LIFTING_OUT  at=({tx:.2f},{ty:.2f})")
+                print(f"[{self.name}] GOTO_SECOND_POD_Y → LIFTING_OUT  at={self._second_pod_target()}")
 
         elif self._pickup_state == "LIFTING_OUT":
             if self._run_lift_phase(up=True):
                 self._reset_dock_pid()
-                self._pickup_state = "BACKOUT_PICK"
+                self._pickup_state = "TURN_SECOND_TOP_Y"
                 self._fsm_step     = 0
-                print(f"[{self.name}] LIFTING_OUT → BACKOUT_PICK  target_x={self._backout_x:.2f}")
+                print(f"[{self.name}] LIFTING_OUT → TURN_SECOND_TOP_Y  yaw=90°")
 
-        elif self._pickup_state == "BACKOUT_PICK":
-            if self._drive_along_x(self._backout_x):
+        elif self._pickup_state == "TURN_SECOND_TOP_Y":
+            if self._turn_to_heading(math.pi / 2.0):
                 self._reset_dock_pid()
-                self._pickup_state = "GOTO_CORR_RETURN"
+                self._pickup_state = "RETURN_SECOND_TOP_Y"
                 self._fsm_step     = 0
-                print(f"[{self.name}] BACKOUT_PICK → GOTO_CORR_RETURN  corridor={_CORRIDOR_XY}")
+                print(f"[{self.name}] TURN_SECOND_TOP_Y → RETURN_SECOND_TOP_Y")
+
+        elif self._pickup_state == "RETURN_SECOND_TOP_Y":
+            _, ty = self._second_route_top_target()
+            if self._drive_minimap_axis_with_heading(ty, "y", math.pi / 2.0,
+                                                     self.PRECISE_TOL):
+                self._reset_dock_pid()
+                self._pickup_state = "TURN_SECOND_GATE_X"
+                self._fsm_step     = 0
+                print(f"[{self.name}] RETURN_SECOND_TOP_Y → TURN_SECOND_GATE_X  yaw=-180°")
+
+        elif self._pickup_state == "TURN_SECOND_GATE_X":
+            if self._turn_to_heading(-math.pi):
+                self._reset_dock_pid()
+                self._pickup_state = "RETURN_SECOND_GATE_X"
+                self._fsm_step     = 0
+                print(f"[{self.name}] TURN_SECOND_GATE_X → RETURN_SECOND_GATE_X")
+
+        elif self._pickup_state == "RETURN_SECOND_GATE_X":
+            tx, _ = self._section_entry_xy()
+            if self._drive_minimap_axis_with_heading(tx, "x", -math.pi,
+                                                     self.PRECISE_TOL, fast=True):
+                self._reset_dock_pid()
+                self._pickup_state = "TURN_SECOND_PICKUP_Y"
+                self._fsm_step     = 0
+                print(f"[{self.name}] RETURN_SECOND_GATE_X → TURN_SECOND_PICKUP_Y  yaw=-90°")
+
+        elif self._pickup_state == "TURN_SECOND_PICKUP_Y":
+            if self._turn_to_heading(-math.pi / 2.0):
+                self._reset_dock_pid()
+                self._pickup_state = "RETURN_SECOND_PICKUP_Y"
+                self._fsm_step     = 0
+                print(f"[{self.name}] TURN_SECOND_PICKUP_Y → RETURN_SECOND_PICKUP_Y")
+
+        elif self._pickup_state == "RETURN_SECOND_PICKUP_Y":
+            _, ty = self._pickup_xy
+            if self._drive_minimap_axis_with_heading(ty, "y", -math.pi / 2.0,
+                                                     self.PRECISE_TOL):
+                self._reset_dock_pid()
+                self._pickup_state = "TURN_SECOND_PICKUP_X"
+                self._fsm_step     = 0
+                print(f"[{self.name}] RETURN_SECOND_PICKUP_Y → TURN_SECOND_PICKUP_X  yaw=-180°")
+
+        elif self._pickup_state == "TURN_SECOND_PICKUP_X":
+            if self._turn_to_heading(-math.pi):
+                self._reset_dock_pid()
+                self._pickup_state = "RETURN_SECOND_PICKUP_X"
+                self._fsm_step     = 0
+                print(f"[{self.name}] TURN_SECOND_PICKUP_X → RETURN_SECOND_PICKUP_X")
+
+        elif self._pickup_state == "RETURN_SECOND_PICKUP_X":
+            tx, _ = self._pickup_xy
+            if self._drive_minimap_axis_with_heading(tx, "x", -math.pi,
+                                                     self.PLACE_TOL):
+                self._reset_dock_pid()
+                self._pickup_state = "LOWERING_OUT"
+                self._fsm_step     = 0
+                print(f"[{self.name}] RETURN_SECOND_PICKUP_X → LOWERING_OUT  supply={self._pickup_xy}")
 
         elif self._pickup_state == "GOTO_CORR_RETURN":
             if self._nav_axis_aligned(cx, cy, yfirst=True):
@@ -917,9 +1269,9 @@ class IwHubAgent(BaseRobotAgent):
             if self._run_lift_phase(up=False):
                 self._delivery_idx = (self._delivery_idx + 1) % max(1, len(self._delivery_slots))
                 self._reset_dock_pid()
-                self._pickup_state = "RETREAT"
+                self._pickup_state = "WAITING"
                 self._fsm_step     = 0
-                print(f"[{self.name}] LOWERING_OUT → RETREAT")
+                print(f"[{self.name}] LOWERING_OUT → WAITING  supply={self._pickup_xy}")
 
         elif self._pickup_state == "RETREAT":
             hx, hy = self._home_xy
@@ -928,6 +1280,266 @@ class IwHubAgent(BaseRobotAgent):
                 self._pickup_state = "WAITING"
                 self._fsm_step     = 0
                 print(f"[{self.name}] RETREAT → WAITING  (cycle #{self._drop_idx})")
+
+    # ── Section A 스크립트 루트 FSM ──────────────────────────────────
+    # 경로 (헤딩 = 수학 라디안 기준, 0=동, π/2=북, π=서, -π/2=남):
+    #   spawn(-12.8,9.2) heading=π/2(북)
+    #   LIFTING → (-12.8,12.64) → turn 서(π) → (-7.4,12.64) → turn 북(π/2)
+    #   → (-7.4,6.5) → turn 서(π) → fast (12.5,6.5) → LOWERING(drop)
+    #   → (-0.036,6.508) → turn 북(π/2) → (-0.036,12.23)
+    #   → turn 동(0) → (-12.7,12.23) → turn 북(π/2)
+    #   → (-12.7,9.2) → LOWERING_HOME → WAITING
+
+    def _run_section_a_fsm(self) -> None:
+        cnt = self._get_signal_count()
+
+        if self._sa_state == "WAITING":
+            self._fsm_step += 1
+            if self._fsm_step % 100 == 0:
+                x, y, _ = self._get_xy_hdg()
+                print(f"[{self.name}] A_WAITING  signal={cnt}/{self._complete_needed} "
+                      f"pos=({x:.2f},{y:.2f})")
+            if cnt >= self._complete_needed:
+                self._reset_signal_count()
+                self._sa_state = "LIFTING"
+                self._fsm_step = 0
+                print(f"[{self.name}] A_WAITING → LIFTING")
+
+        elif self._sa_state == "LIFTING":
+            if self._run_lift_phase(up=True):
+                self._sa_state = "GOTO_NORTH"
+                self._fsm_step = 0
+                print(f"[{self.name}] LIFTING → GOTO_NORTH  y=12.64")
+
+        elif self._sa_state == "GOTO_NORTH":
+            if self._drive_minimap_axis_no_turn(_SECTION_A_NORTH_Y, "y",
+                                                _SECTION_A_ROUTE_TOL):
+                self._sa_state = "TURN_WEST"
+                self._fsm_step = 0
+                print(f"[{self.name}] GOTO_NORTH → TURN_WEST")
+
+        elif self._sa_state == "TURN_WEST":
+            if self._turn_to_heading(math.pi):
+                self._sa_state = "GOTO_EAST_1"
+                self._fsm_step = 0
+                print(f"[{self.name}] TURN_WEST → GOTO_EAST_1  x=-7.4")
+
+        elif self._sa_state == "GOTO_EAST_1":
+            # heading=π(west), moving east in reverse
+            if self._drive_minimap_axis_with_heading(_SECTION_A_GATE_X, "x", math.pi,
+                                                     _SECTION_A_ROUTE_TOL):
+                self._sa_state = "TURN_NORTH_1"
+                self._fsm_step = 0
+                print(f"[{self.name}] GOTO_EAST_1 → TURN_NORTH_1")
+
+        elif self._sa_state == "TURN_NORTH_1":
+            if self._turn_to_heading(math.pi / 2):
+                self._sa_state = "GOTO_SOUTH_1"
+                self._fsm_step = 0
+                print(f"[{self.name}] TURN_NORTH_1 → GOTO_SOUTH_1  y=6.5")
+
+        elif self._sa_state == "GOTO_SOUTH_1":
+            # heading=π/2(north), moving south in reverse
+            if self._drive_minimap_axis_with_heading(_SECTION_A_DROP_Y, "y", math.pi / 2,
+                                                     _SECTION_A_ROUTE_TOL):
+                self._sa_state = "TURN_WEST_2"
+                self._fsm_step = 0
+                print(f"[{self.name}] GOTO_SOUTH_1 → TURN_WEST_2")
+
+        elif self._sa_state == "TURN_WEST_2":
+            if self._turn_to_heading(math.pi):
+                self._sa_state = "GOTO_EAST_2"
+                self._fsm_step = 0
+                print(f"[{self.name}] TURN_WEST_2 → GOTO_EAST_2  x=12.5 (drop zone)")
+
+        elif self._sa_state == "GOTO_EAST_2":
+            # heading=π(west), moving east in reverse, long fast run
+            if self._drive_minimap_axis_with_heading(_SECTION_A_DROP_X, "x", math.pi,
+                                                     _SECTION_A_ROUTE_TOL, fast=True):
+                self._sa_state = "LOWERING"
+                self._fsm_step = 0
+                print(f"[{self.name}] GOTO_EAST_2 → LOWERING  (drop pod)")
+
+        elif self._sa_state == "LOWERING":
+            if self._run_lift_phase(up=False):
+                self._drop_idx += 1
+                self._sa_state = "GOTO_BACK"
+                self._fsm_step = 0
+                print(f"[{self.name}] LOWERING → GOTO_BACK  x=-0.036")
+
+        elif self._sa_state == "GOTO_BACK":
+            # heading=π(west), moving west forward, fast
+            if self._drive_minimap_axis_with_heading(_SECTION_A_BACK_X, "x", math.pi,
+                                                     _SECTION_A_ROUTE_TOL, fast=True):
+                self._sa_state = "TURN_NORTH_2"
+                self._fsm_step = 0
+                print(f"[{self.name}] GOTO_BACK → TURN_NORTH_2")
+
+        elif self._sa_state == "TURN_NORTH_2":
+            if self._turn_to_heading(math.pi / 2):
+                self._sa_state = "GOTO_NORTH_2"
+                self._fsm_step = 0
+                print(f"[{self.name}] TURN_NORTH_2 → GOTO_NORTH_2  y=12.23")
+
+        elif self._sa_state == "GOTO_NORTH_2":
+            # heading=π/2(north), moving north forward
+            if self._drive_minimap_axis_with_heading(_SECTION_A_RETURN_Y, "y", math.pi / 2,
+                                                     _SECTION_A_ROUTE_TOL):
+                self._sa_state = "TURN_EAST"
+                self._fsm_step = 0
+                print(f"[{self.name}] GOTO_NORTH_2 → TURN_EAST")
+
+        elif self._sa_state == "TURN_EAST":
+            if self._turn_to_heading(0.0):
+                self._sa_state = "GOTO_WEST"
+                self._fsm_step = 0
+                print(f"[{self.name}] TURN_EAST → GOTO_WEST  x=-12.7")
+
+        elif self._sa_state == "GOTO_WEST":
+            # heading=0(east), moving west in reverse, fast
+            if self._drive_minimap_axis_with_heading(_SECTION_A_HOME_X, "x", 0.0,
+                                                     _SECTION_A_ROUTE_TOL, fast=True):
+                self._sa_state = "TURN_NORTH_3"
+                self._fsm_step = 0
+                print(f"[{self.name}] GOTO_WEST → TURN_NORTH_3")
+
+        elif self._sa_state == "TURN_NORTH_3":
+            if self._turn_to_heading(math.pi / 2):
+                self._sa_state = "GOTO_HOME_Y"
+                self._fsm_step = 0
+                print(f"[{self.name}] TURN_NORTH_3 → GOTO_HOME_Y  y=9.2")
+
+        elif self._sa_state == "GOTO_HOME_Y":
+            # heading=π/2(north), moving south in reverse
+            if self._drive_minimap_axis_with_heading(_SECTION_A_HOME_Y, "y", math.pi / 2,
+                                                     _SECTION_A_ROUTE_TOL):
+                self._sa_state = "LOWERING_HOME"
+                self._fsm_step = 0
+                print(f"[{self.name}] GOTO_HOME_Y → LOWERING_HOME")
+
+        elif self._sa_state == "LOWERING_HOME":
+            if self._run_lift_phase(up=False):
+                self._sa_state = "WAITING"
+                self._fsm_step = 0
+                print(f"[{self.name}] LOWERING_HOME → WAITING (cycle #{self._drop_idx})")
+
+    # ── Section C 스크립트 루트 FSM ──────────────────────────────────
+    # (-9.7,-8.6) → (-9.7,-5.4) → turn west(π) → (12.5,-5.4)
+    # → lower → (0.003,-5.4) → turn south(-π/2) → (0.003,-7.72)
+    # → lift → (0.003,-5.4) → turn west(π) → (-9.6,-5.73)
+    # → turn north(π/2) → (-9.7,-8.6) → lower → wait
+    def _run_section_c_fsm(self) -> None:
+        cnt = self._get_signal_count()
+
+        if self._sa_state == "WAITING":
+            self._fsm_step += 1
+            if self._fsm_step % 100 == 0:
+                x, y, _ = self._get_xy_hdg()
+                print(f"[{self.name}] C_WAITING  signal={cnt}/{self._complete_needed} "
+                      f"pos=({x:.2f},{y:.2f})")
+            if cnt >= self._complete_needed:
+                self._reset_signal_count()
+                self._sa_state = "LIFTING"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_WAITING → LIFTING")
+
+        elif self._sa_state == "LIFTING":
+            if self._run_lift_phase(up=True):
+                self._sa_state = "GOTO_NORTH"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_LIFTING → GOTO_NORTH  y=-5.4")
+
+        elif self._sa_state == "GOTO_NORTH":
+            if self._drive_minimap_axis_no_turn(_SECTION_C_NORTH_Y, "y",
+                                                _SECTION_C_ROUTE_TOL):
+                self._sa_state = "TURN_WEST"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_GOTO_NORTH → TURN_WEST")
+
+        elif self._sa_state == "TURN_WEST":
+            if self._turn_to_heading(math.pi):
+                self._sa_state = "GOTO_DROP_X"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_TURN_WEST → GOTO_DROP_X  x=12.5")
+
+        elif self._sa_state == "GOTO_DROP_X":
+            if self._drive_minimap_axis_with_heading(_SECTION_C_DROP_X, "x", math.pi,
+                                                     _SECTION_C_ROUTE_TOL, fast=True):
+                self._sa_state = "LOWERING"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_GOTO_DROP_X → LOWERING")
+
+        elif self._sa_state == "LOWERING":
+            if self._run_lift_phase(up=False):
+                self._drop_idx += 1
+                self._sa_state = "GOTO_BACK_X"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_LOWERING → GOTO_BACK_X  x=0.003")
+
+        elif self._sa_state == "GOTO_BACK_X":
+            if self._drive_minimap_axis_with_heading(_SECTION_C_BACK_X, "x", math.pi,
+                                                     _SECTION_C_ROUTE_TOL, fast=True):
+                self._sa_state = "TURN_SOUTH"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_GOTO_BACK_X → TURN_SOUTH")
+
+        elif self._sa_state == "TURN_SOUTH":
+            if self._turn_to_heading(-math.pi / 2):
+                self._sa_state = "GOTO_POD_Y"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_TURN_SOUTH → GOTO_POD_Y  y=-7.72")
+
+        elif self._sa_state == "GOTO_POD_Y":
+            if self._drive_minimap_axis_with_heading(_SECTION_C_POD_Y, "y", -math.pi / 2,
+                                                     _SECTION_C_ROUTE_TOL):
+                self._sa_state = "LIFTING_OUT"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_GOTO_POD_Y → LIFTING_OUT")
+
+        elif self._sa_state == "LIFTING_OUT":
+            if self._run_lift_phase(up=True):
+                self._sa_state = "RETURN_BACK_Y"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_LIFTING_OUT → RETURN_BACK_Y  y=-5.4")
+
+        elif self._sa_state == "RETURN_BACK_Y":
+            if self._drive_minimap_axis_with_heading(_SECTION_C_NORTH_Y, "y", -math.pi / 2,
+                                                     _SECTION_C_ROUTE_TOL):
+                self._sa_state = "TURN_WEST_RETURN"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_RETURN_BACK_Y → TURN_WEST_RETURN")
+
+        elif self._sa_state == "TURN_WEST_RETURN":
+            if self._turn_to_heading(math.pi):
+                self._sa_state = "RETURN_HOME_X"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_TURN_WEST_RETURN → RETURN_HOME_X")
+
+        elif self._sa_state == "RETURN_HOME_X":
+            if self._drive_minimap_axis_with_heading(_SECTION_C_RETURN_X, "x", math.pi,
+                                                     _SECTION_C_ROUTE_TOL, fast=True):
+                self._sa_state = "TURN_NORTH_HOME"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_RETURN_HOME_X → TURN_NORTH_HOME")
+
+        elif self._sa_state == "TURN_NORTH_HOME":
+            if self._turn_to_heading(math.pi / 2):
+                self._sa_state = "GOTO_HOME_Y"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_TURN_NORTH_HOME → GOTO_HOME_Y")
+
+        elif self._sa_state == "GOTO_HOME_Y":
+            if self._drive_minimap_axis_with_heading(_SECTION_C_START_Y, "y", math.pi / 2,
+                                                     _SECTION_C_ROUTE_TOL):
+                self._sa_state = "LOWERING_HOME"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_GOTO_HOME_Y → LOWERING_HOME")
+
+        elif self._sa_state == "LOWERING_HOME":
+            if self._run_lift_phase(up=False):
+                self._sa_state = "WAITING"
+                self._fsm_step = 0
+                print(f"[{self.name}] C_LOWERING_HOME → WAITING (cycle #{self._drop_idx})")
 
     # ── 표준 모드 FSM ────────────────────────────────────────────────
     # 상태:
@@ -1020,7 +1632,13 @@ class IwHubAgent(BaseRobotAgent):
                 pass
         if self._physics_step % self.PUB_EVERY != 0:
             return
+        if getattr(self, "_manual_override", False):
+            return
         if self._mode == "pickup":
             self._run_pickup_fsm()
+        elif self._mode == "section_a":
+            self._run_section_a_fsm()
+        elif self._mode == "section_c":
+            self._run_section_c_fsm()
         else:
             self._run_fsm()
