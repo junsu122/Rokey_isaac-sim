@@ -36,7 +36,6 @@ https://github.com/user-attachments/assets/1119c8ba-7b85-417a-b820-afd7819bdf98
 
 ### 🦾 Doosan M0609 — 물류 분류 & 적재 담당
 
-<img src="docs/m0609.png" alt="M0609" width="400"/>
 
 > ArUco 마커를 인식하여 물품을 정밀하게 집고 목표 위치에 적재하는 **산업용 6축 협동로봇**
 
