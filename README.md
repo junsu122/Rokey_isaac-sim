@@ -1,4 +1,4 @@
-# 🏭 Isaac Sim 기반 스마트 물류공장 디지털 트윈
+<img width="562" height="551" alt="image" src="https://github.com/user-attachments/assets/90e405aa-c397-412b-bfaf-6fa5a3fb68a1" /># 🏭 Isaac Sim 기반 스마트 물류공장 디지털 트윈
 # main_isaac 안에 있는 파일들만 확인하시면 됩니다!!!
 
 > **NVIDIA Isaac Sim** 환경에서 4종의 로봇이 협력하여 구현하는 **물류 자동화 디지털 트윈** 프로젝트
@@ -191,38 +191,9 @@ Rokey_isaac-sim/
 ## ⚙️ 아키텍처
 
 ```
-                    ┌─────────────────────────────────┐
-                    │           main.py                │
-                    │  (Isaac Sim SimulationApp 진입점) │
-                    └────────────┬────────────────────┘
-                                 │
-              ┌──────────────────▼──────────────────┐
-              │          robot_config.py              │
-              │       ROBOT_REGISTRY 기반 설정         │
-              └──────────────────┬──────────────────┘
-                                 │
-              ┌──────────────────▼──────────────────┐
-              │           world_setup.py              │
-              │  창고 USD + ArUco 박스 + Pod Stack     │
-              └──────────────────┬──────────────────┘
-                                 │
-         ┌───────────────────────┼───────────────────────┐
-         │                       │                       │
-    ┌────▼────┐            ┌─────▼────┐           ┌─────▼────┐
-    │M0609Agent│           │SpotAgent │           │IwHubAgent│
-    │ ×3       │           │  ×2      │           │   ×2     │
-    └──────────┘           └──────────┘           └──────────┘
-    ArUco 비전              순찰 + 픽업             ROS2 cmd_vel
-    RMPFlow IK              RG2 그리퍼              OmniGraph
-    흡착 그리퍼              웨이포인트 이동           /odom pub
+<img width="562" height="551" alt="Screenshot from 2026-05-28 16-21-14" src="https://github.com/user-attachments/assets/3e9eafaf-ebd5-4a5f-a29f-1c2fd43ff6e6" />
 
-                        ┌─────▼────┐
-                        │DroneAgent│
-                        │   ×1     │
-                        └──────────┘
-                        Pegasus Sim
-                        HybridController
-                        깊이카메라 HUD
+
 ```
 
 **실행 루프:**
