@@ -1,0 +1,30 @@
+running egg_info
+writing ../../build/iw_hub_movement/iw_hub_movement.egg-info/PKG-INFO
+writing dependency_links to ../../build/iw_hub_movement/iw_hub_movement.egg-info/dependency_links.txt
+writing entry points to ../../build/iw_hub_movement/iw_hub_movement.egg-info/entry_points.txt
+writing requirements to ../../build/iw_hub_movement/iw_hub_movement.egg-info/requires.txt
+writing top-level names to ../../build/iw_hub_movement/iw_hub_movement.egg-info/top_level.txt
+reading manifest file '../../build/iw_hub_movement/iw_hub_movement.egg-info/SOURCES.txt'
+writing manifest file '../../build/iw_hub_movement/iw_hub_movement.egg-info/SOURCES.txt'
+running build
+running build_py
+copying iw_hub_movement/axis_nav.py -> /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/build/iw_hub_movement/build/lib/iw_hub_movement
+copying iw_hub_movement/manual_console.py -> /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/build/iw_hub_movement/build/lib/iw_hub_movement
+copying iw_hub_movement/move_to_point.py -> /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/build/iw_hub_movement/build/lib/iw_hub_movement
+running install
+running install_lib
+copying /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/build/iw_hub_movement/build/lib/iw_hub_movement/axis_nav.py -> /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/install/iw_hub_movement/lib/python3.10/site-packages/iw_hub_movement
+copying /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/build/iw_hub_movement/build/lib/iw_hub_movement/manual_console.py -> /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/install/iw_hub_movement/lib/python3.10/site-packages/iw_hub_movement
+copying /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/build/iw_hub_movement/build/lib/iw_hub_movement/move_to_point.py -> /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/install/iw_hub_movement/lib/python3.10/site-packages/iw_hub_movement
+byte-compiling /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/install/iw_hub_movement/lib/python3.10/site-packages/iw_hub_movement/axis_nav.py to axis_nav.cpython-310.pyc
+byte-compiling /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/install/iw_hub_movement/lib/python3.10/site-packages/iw_hub_movement/manual_console.py to manual_console.cpython-310.pyc
+byte-compiling /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/install/iw_hub_movement/lib/python3.10/site-packages/iw_hub_movement/move_to_point.py to move_to_point.cpython-310.pyc
+running install_data
+running install_egg_info
+removing '/home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/install/iw_hub_movement/lib/python3.10/site-packages/iw_hub_movement-0.1.0-py3.10.egg-info' (and everything under it)
+Copying ../../build/iw_hub_movement/iw_hub_movement.egg-info to /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/install/iw_hub_movement/lib/python3.10/site-packages/iw_hub_movement-0.1.0-py3.10.egg-info
+running install_scripts
+Installing axis_nav script to /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/install/iw_hub_movement/lib/iw_hub_movement
+Installing manual_console script to /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/install/iw_hub_movement/lib/iw_hub_movement
+Installing move_to_point script to /home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/install/iw_hub_movement/lib/iw_hub_movement
+writing list of installed files to '/home/rokey/Rokey_isaac-sim/main_isaac/robots/iw_hub/build/iw_hub_movement/install.log'
