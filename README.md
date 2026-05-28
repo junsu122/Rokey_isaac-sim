@@ -11,11 +11,10 @@
 
 https://github.com/user-attachments/assets/1119c8ba-7b85-417a-b820-afd7819bdf98
 
-```
-📹 유튜브 링크 [유튜브 영상 보러가기](https://www.youtube.com/watch?v=5vBMeulATd0)
-```
 
----
+ [시청하기 📹](https://www.youtube.com/watch?v=5vBMeulATd0)
+
+
 
 ## 🗺️ 프로젝트 개요
 
