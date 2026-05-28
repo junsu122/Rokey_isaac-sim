@@ -190,12 +190,11 @@ Rokey_isaac-sim/
 
 ## ⚙️ 아키텍처
 
-```
+
 <img width="562" height="551" alt="아이작심아키텍처" src="https://github.com/user-attachments/assets/25194336-9c51-4423-aeaa-6e05859ec577" />
 
 
 
-```
 
 **실행 루프:**
 - **Physics Callback** (500 Hz): 각 에이전트의 `on_physics_step(dt)` 호출 → 로봇 제어
