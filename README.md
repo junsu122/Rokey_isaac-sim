@@ -1,4 +1,4 @@
-<img width="562" height="551" alt="image" src="https://github.com/user-attachments/assets/90e405aa-c397-412b-bfaf-6fa5a3fb68a1" /># 🏭 Isaac Sim 기반 스마트 물류공장 디지털 트윈
+# 🏭 Isaac Sim 기반 스마트 물류공장 디지털 트윈
 # main_isaac 안에 있는 파일들만 확인하시면 됩니다!!!
 
 > **NVIDIA Isaac Sim** 환경에서 4종의 로봇이 협력하여 구현하는 **물류 자동화 디지털 트윈** 프로젝트
@@ -191,7 +191,7 @@ Rokey_isaac-sim/
 ## ⚙️ 아키텍처
 
 ```
-<img width="562" height="551" alt="Screenshot from 2026-05-28 16-21-14" src="https://github.com/user-attachments/assets/3e9eafaf-ebd5-4a5f-a29f-1c2fd43ff6e6" />
+<img width="562" height="551" alt="image" src="https://github.com/user-attachments/assets/90e405aa-c397-412b-bfaf-6fa5a3fb68a1" />
 
 
 ```
